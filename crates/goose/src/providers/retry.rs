@@ -201,6 +201,8 @@ impl<P: Provider> ProviderRetry for P {
                                     "Credential refresh failed, returning original auth error: {:?}",
                                     refresh_err
                                 );
+                                // Do not return refresh_err, we want to return the original error.
+                                // It will fall through and be returned.
                             }
                         }
                     }
