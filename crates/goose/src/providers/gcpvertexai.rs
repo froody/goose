@@ -48,6 +48,40 @@ const DEFAULT_MAX_RETRY_INTERVAL_MS: u64 = 320_000;
 static STATUS_API_OVERLOADED: Lazy<StatusCode> =
     Lazy::new(|| StatusCode::from_u16(529).expect("Valid status code 529 for API_OVERLOADED"));
 
+fn extract_chat_model_name(entry: &Value) -> Option<String> {
+    let full = entry.get("name").and_then(|v| v.as_str())?;
+    let basename = full.rsplit('/').next()?.to_string();
+    let lower = basename.to_lowercase();
+
+    if !lower.starts_with("gemini-") && !lower.starts_with("claude-") {
+        return None;
+    }
+
+    let exclusions = [
+        "embedding",
+        "imagen",
+        "image",
+        "veo",
+        "video",
+        "tts",
+        "audio",
+        "speech",
+        "lyria",
+        "chirp",
+    ];
+    if exclusions.iter().any(|kw| lower.contains(kw)) {
+        return None;
+    }
+
+    if let Some(stage) = entry.get("launchStage").and_then(|v| v.as_str()) {
+        if !matches!(stage, "GA" | "PUBLIC_PREVIEW" | "EXPERIMENTAL") {
+            return None;
+        }
+    }
+
+    Some(basename)
+}
+
 fn rate_limit_error_message(response_text: &str) -> String {
     let cite = "See https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429";
     if response_text.contains("Exceeded the Provisioned Throughput") {
@@ -355,6 +389,15 @@ impl GcpVertexAIProvider {
             } else if status == StatusCode::OK {
                 return Ok(response);
             } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+                if rate_limit_attempts == 0 && overloaded_attempts == 0 && last_error.is_none() {
+                    // Try to refresh credentials once on auth error
+                    if let Ok(()) = self.refresh_credentials().await {
+                        last_error = Some(ProviderError::Authentication(format!(
+                            "Authentication failed with status: {status}"
+                        )));
+                        continue;
+                    }
+                }
                 return Err(ProviderError::Authentication(format!(
                     "Authentication failed with status: {status}"
                 )));
@@ -409,6 +452,65 @@ impl GcpVertexAIProvider {
             }
             _ => result,
         }
+    }
+
+    async fn fetch_publisher_models(&self, publisher: &str) -> Result<Vec<String>, ProviderError> {
+        let auth_header = self
+            .get_auth_header()
+            .await
+            .map_err(|e| ProviderError::Authentication(e.to_string()))?;
+
+        let host = self.host.trim_end_matches('/');
+        let mut models = Vec::new();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut url = format!("{host}/v1beta1/publishers/{publisher}/models?pageSize=200");
+            if let Some(token) = &page_token {
+                url.push_str(&format!("&pageToken={token}"));
+            }
+
+            let response = self
+                .client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .send()
+                .await
+                .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(ProviderError::RequestFailed(format!(
+                    "publishers/{publisher}/models list failed ({status}): {body}"
+                )));
+            }
+
+            let json: Value = response
+                .json()
+                .await
+                .map_err(|e| ProviderError::RequestFailed(e.to_string()))?;
+
+            if let Some(arr) = json.get("publisherModels").and_then(|v| v.as_array()) {
+                for entry in arr {
+                    if let Some(name) = extract_chat_model_name(entry) {
+                        models.push(name);
+                    }
+                }
+            }
+
+            page_token = json
+                .get("nextPageToken")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+
+            if page_token.is_none() {
+                break;
+            }
+        }
+
+        Ok(models)
     }
 
     async fn filter_by_org_policy(&self, models: Vec<String>) -> Vec<String> {
@@ -626,7 +728,36 @@ impl Provider for GcpVertexAIProvider {
     }
 
     async fn fetch_supported_models(&self) -> Result<Vec<String>, ProviderError> {
-        let models: Vec<String> = KNOWN_MODELS.iter().map(|s| s.to_string()).collect();
+        let (google, anthropic) = tokio::join!(
+            self.fetch_publisher_models("google"),
+            self.fetch_publisher_models("anthropic"),
+        );
+
+        let mut models: Vec<String> = Vec::new();
+        let mut had_any = false;
+        match google {
+            Ok(g) => {
+                had_any = true;
+                models.extend(g);
+            }
+            Err(e) => tracing::warn!("Vertex publisher catalog (google) fetch failed: {e}"),
+        }
+        match anthropic {
+            Ok(a) => {
+                had_any = true;
+                models.extend(a);
+            }
+            Err(e) => tracing::warn!("Vertex publisher catalog (anthropic) fetch failed: {e}"),
+        }
+
+        if !had_any {
+            tracing::warn!("Falling back to hardcoded KNOWN_MODELS list");
+            models = KNOWN_MODELS.iter().map(|s| s.to_string()).collect();
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        models.retain(|m| seen.insert(m.clone()));
+
         let filtered = self.filter_by_org_policy(models).await;
         Ok(filtered)
     }
@@ -797,6 +928,87 @@ mod tests {
             url
         );
         assert!(url.as_str().contains("locations/global"));
+    }
+
+    #[test]
+    fn test_extract_chat_model_name_includes_gemini() {
+        let entry = serde_json::json!({
+            "name": "publishers/google/models/gemini-2.5-flash",
+            "launchStage": "GA"
+        });
+        assert_eq!(
+            extract_chat_model_name(&entry),
+            Some("gemini-2.5-flash".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_chat_model_name_includes_claude() {
+        let entry = serde_json::json!({
+            "name": "publishers/anthropic/models/claude-opus-4@20250514",
+            "launchStage": "GA"
+        });
+        assert_eq!(
+            extract_chat_model_name(&entry),
+            Some("claude-opus-4@20250514".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_chat_model_name_includes_public_preview() {
+        let entry = serde_json::json!({
+            "name": "publishers/google/models/gemini-3.1-pro-preview",
+            "launchStage": "PUBLIC_PREVIEW"
+        });
+        assert_eq!(
+            extract_chat_model_name(&entry),
+            Some("gemini-3.1-pro-preview".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_chat_model_name_excludes_image_gen() {
+        let entry = serde_json::json!({
+            "name": "publishers/google/models/imagen-3.0-generate-002",
+            "launchStage": "GA"
+        });
+        assert_eq!(extract_chat_model_name(&entry), None);
+    }
+
+    #[test]
+    fn test_extract_chat_model_name_excludes_embeddings() {
+        let entry = serde_json::json!({
+            "name": "publishers/google/models/text-embedding-005",
+            "launchStage": "GA"
+        });
+        assert_eq!(extract_chat_model_name(&entry), None);
+    }
+
+    #[test]
+    fn test_extract_chat_model_name_excludes_deprecated() {
+        let entry = serde_json::json!({
+            "name": "publishers/google/models/gemini-1.0-pro",
+            "launchStage": "DEPRECATED"
+        });
+        assert_eq!(extract_chat_model_name(&entry), None);
+    }
+
+    #[test]
+    fn test_extract_chat_model_name_excludes_non_supported_publisher() {
+        let entry = serde_json::json!({
+            "name": "publishers/google/models/gemma-2b-it",
+            "launchStage": "GA"
+        });
+        assert_eq!(extract_chat_model_name(&entry), None);
+    }
+
+    #[test]
+    fn test_extract_chat_model_name_excludes_gemini_image_variant() {
+        let entry = serde_json::json!({
+            "name": "publishers/google/models/gemini-3-pro-image-preview",
+            "launchStage": "PUBLIC_PREVIEW"
+        });
+        assert_eq!(extract_chat_model_name(&entry), None);
     }
 
     #[test]
