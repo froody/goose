@@ -1386,7 +1386,7 @@ pub async fn run_shell_terminal_false<C: Connection>() {
                 include_str!("../acp_test_data/openai_shell_tool_call.txt"),
             ),
             (
-                SHELL_TEST_CONTENT.into(),
+                format!("\"role\":\"tool\",\"content\":\"{}\"", SHELL_TEST_CONTENT),
                 include_str!("../acp_test_data/openai_shell_tool_result.txt"),
             ),
         ],
@@ -1429,7 +1429,7 @@ pub async fn run_shell_terminal_true<C: Connection>() {
                 include_str!("../acp_test_data/openai_shell_tool_call.txt"),
             ),
             (
-                SHELL_TEST_CONTENT.into(),
+                format!("\"role\":\"tool\",\"content\":\"{}\"", SHELL_TEST_CONTENT),
                 include_str!("../acp_test_data/openai_shell_tool_result.txt"),
             ),
         ],
