@@ -638,6 +638,10 @@ impl CliSession {
                 history.save(editor);
                 self.handle_goose_mode(&mode).await?;
             }
+            InputResult::Model(model_opt) => {
+                history.save(editor);
+                self.handle_model_command(model_opt).await?;
+            }
             InputResult::Plan(options) => {
                 self.handle_plan_mode(options).await?;
             }
@@ -822,6 +826,53 @@ impl CliSession {
         self.agent.update_goose_mode(mode, &self.session_id).await?;
         config.set_goose_mode(mode)?;
         output::goose_mode_message(&format!("Goose mode set to '{mode}'"));
+        Ok(())
+    }
+
+    async fn handle_model_command(&mut self, model_opt: Option<String>) -> Result<()> {
+        if let Some(model_str) = model_opt {
+            // Update the model
+            let parts: Vec<&str> = model_str.split(':').collect();
+            if parts.len() == 2 {
+                let provider = parts[0];
+                let model = parts[1];
+                let config = Config::global();
+                config.set_param("GOOSE_PROVIDER", provider)?;
+                config.set_param("GOOSE_MODEL", model)?;
+
+                // Fetch enabled extensions from the current session so that
+                // the new provider instance receives them
+                let extensions = goose::session::EnabledExtensionsState::for_session(
+                    &self.agent.config.session_manager,
+                    &self.session_id,
+                    config,
+                )
+                .await;
+
+                let model_config =
+                    goose::model::ModelConfig::new(model)?.with_canonical_limits(provider);
+
+                let new_provider =
+                    goose::providers::create(provider, model_config, extensions).await?;
+
+                self.agent
+                    .update_provider(new_provider, &self.session_id)
+                    .await?;
+
+                output::goose_mode_message(&format!("Model set to {}/{}", provider, model));
+            } else {
+                output::render_error("Invalid model format. Use provider:model (e.g. anthropic:claude-3-5-sonnet-20241022)");
+            }
+        } else {
+            // Display current model
+            let provider = Config::global()
+                .get_param::<String>("GOOSE_PROVIDER")
+                .unwrap_or_else(|_| "unknown".to_string());
+            let model = Config::global()
+                .get_param::<String>("GOOSE_MODEL")
+                .unwrap_or_else(|_| "unknown".to_string());
+            output::goose_mode_message(&format!("Current model: {}:{}", provider, model));
+        }
         Ok(())
     }
 
