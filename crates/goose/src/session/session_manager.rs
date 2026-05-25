@@ -830,9 +830,11 @@ impl SessionStorage {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(thread_id)")
             .execute(&mut *tx)
             .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_thread_messages_thread ON thread_messages(thread_id)")
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_thread_messages_thread ON thread_messages(thread_id)",
+        )
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_thread_messages_message_id ON thread_messages(message_id)")
             .execute(&mut *tx)
             .await?;
