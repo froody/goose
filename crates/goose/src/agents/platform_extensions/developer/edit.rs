@@ -31,6 +31,23 @@ pub struct FileEditParams {
     pub after: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct EditItem {
+    pub old_text: String,
+    pub new_text: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct FileEdit {
+    pub file_path: String,
+    pub edits: Vec<EditItem>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct EditMultipleParams {
+    pub edits: Vec<FileEdit>,
+}
+
 pub struct EditTools;
 
 impl EditTools {
@@ -146,6 +163,92 @@ impl EditTools {
             ))
             .with_priority(0.0)]),
         }
+    }
+
+    pub fn file_edit_multiple_with_cwd(
+        &self,
+        params: EditMultipleParams,
+        working_dir: Option<&Path>,
+    ) -> CallToolResult {
+        let mut files_content = Vec::new();
+        let mut errors = Vec::new();
+
+        // 1. Dry-run Verification step
+        for file_edit in &params.edits {
+            let path = resolve_path(&file_edit.file_path, working_dir);
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    errors.push(format!("Failed to read {}: {}", file_edit.file_path, e));
+                    continue;
+                }
+            };
+
+            let mut current_content = content.clone();
+            let mut file_errors = Vec::new();
+
+            for (idx, edit_item) in file_edit.edits.iter().enumerate() {
+                // Verify unique match
+                let matches: Vec<_> = current_content.match_indices(&edit_item.old_text).collect();
+                match matches.len() {
+                    0 => {
+                        let suggestion = find_similar_context(&current_content, &edit_item.old_text);
+                        let mut msg = format!("Edit {} in {}: No match found for specify text.", idx + 1, file_edit.file_path);
+                        if let Some(hint) = suggestion {
+                            msg.push_str(&format!("\nDid you mean:\n```\n{}\n```", hint));
+                        }
+                        file_errors.push(msg);
+                    }
+                    1 => {
+                        current_content = current_content.replacen(&edit_item.old_text, &edit_item.new_text, 1);
+                    }
+                    n => {
+                        file_errors.push(format!(
+                            "Edit {} in {}: Found {} matches. Please provide more context to identify a unique match.",
+                            idx + 1, file_edit.file_path, n
+                        ));
+                    }
+                }
+            }
+
+            if file_errors.is_empty() {
+                files_content.push((path, current_content, file_edit.file_path.clone()));
+            } else {
+                errors.extend(file_errors);
+            }
+        }
+
+        // If there were any errors in dry-run, ABORT the transaction!
+        if !errors.is_empty() {
+            return CallToolResult::error(vec![Content::text(format!(
+                "Batch Edit Transaction Failed:\n{}",
+                errors.join("\n\n")
+            ))
+            .with_priority(0.0)]);
+        }
+
+        // 2. Perform the actual modifications
+        let mut results = Vec::new();
+        for (path, new_content, original_path) in files_content {
+            match fs::write(&path, &new_content) {
+                Ok(()) => {
+                    results.push(original_path);
+                }
+                Err(e) => {
+                    return CallToolResult::error(vec![Content::text(format!(
+                        "Failed to write back to {}: {}. Transaction aborted partially.",
+                        original_path, e
+                    ))
+                    .with_priority(0.0)]);
+                }
+            }
+        }
+
+        CallToolResult::success(vec![Content::text(format!(
+            "Successfully applied batch edits to: {}",
+            results.join(", ")
+        ))
+        .with_priority(0.0)])
     }
 }
 
@@ -509,5 +612,88 @@ mod tests {
             fs::read_to_string(dir.path().join("relative-edit.txt")).unwrap(),
             "after"
         );
+    }
+
+    #[test]
+    fn test_file_edit_multiple_success() {
+        let dir = setup();
+        let path1 = dir.path().join("f1.txt");
+        let path2 = dir.path().join("f2.txt");
+        fs::write(&path1, "hello world\nalpha").unwrap();
+        fs::write(&path2, "foo bar\nbeta").unwrap();
+
+        let tools = EditTools::new();
+        let params = EditMultipleParams {
+            edits: vec![
+                FileEdit {
+                    file_path: path1.to_string_lossy().to_string(),
+                    edits: vec![
+                        EditItem {
+                            old_text: "world".to_string(),
+                            new_text: "everyone".to_string(),
+                        },
+                        EditItem {
+                            old_text: "alpha".to_string(),
+                            new_text: "gamma".to_string(),
+                        }
+                    ]
+                },
+                FileEdit {
+                    file_path: path2.to_string_lossy().to_string(),
+                    edits: vec![
+                        EditItem {
+                            old_text: "bar".to_string(),
+                            new_text: "baz".to_string(),
+                        }
+                    ]
+                }
+            ]
+        };
+
+        let result = tools.file_edit_multiple_with_cwd(params, None);
+        assert!(!result.is_error.unwrap_or(false));
+
+        assert_eq!(fs::read_to_string(&path1).unwrap(), "hello everyone\ngamma");
+        assert_eq!(fs::read_to_string(&path2).unwrap(), "foo baz\nbeta");
+    }
+
+    #[test]
+    fn test_file_edit_multiple_aborts_on_error() {
+        let dir = setup();
+        let path1 = dir.path().join("f1.txt");
+        let path2 = dir.path().join("f2.txt");
+        fs::write(&path1, "hello world").unwrap();
+        fs::write(&path2, "foo bar").unwrap();
+
+        let tools = EditTools::new();
+        let params = EditMultipleParams {
+            edits: vec![
+                FileEdit {
+                    file_path: path1.to_string_lossy().to_string(),
+                    edits: vec![
+                        EditItem {
+                            old_text: "world".to_string(),
+                            new_text: "everyone".to_string(),
+                        }
+                    ]
+                },
+                FileEdit {
+                    file_path: path2.to_string_lossy().to_string(),
+                    edits: vec![
+                        EditItem {
+                            old_text: "nonexistent".to_string(),
+                            new_text: "baz".to_string(),
+                        }
+                    ]
+                }
+            ]
+        };
+
+        let result = tools.file_edit_multiple_with_cwd(params, None);
+        assert!(result.is_error.unwrap_or(false));
+
+        // Both files should be UNCHANGED (transaction safe abort!)
+        assert_eq!(fs::read_to_string(&path1).unwrap(), "hello world");
+        assert_eq!(fs::read_to_string(&path2).unwrap(), "foo bar");
     }
 }
