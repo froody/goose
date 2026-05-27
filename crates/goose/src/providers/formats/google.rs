@@ -535,7 +535,7 @@ struct GoogleRequest<'a> {
 
 fn get_thinking_config(model_config: &ModelConfig) -> Option<ThinkingConfig> {
     let model_name = model_config.model_name.to_lowercase();
-    let is_gemini_3 = model_name.starts_with("gemini-3");
+    let is_gemini_3 = model_name.starts_with("gemini-3") || model_name.starts_with("gemini-3.5");
     let is_gemini_25 = model_name.starts_with("gemini-2.5");
     if !is_gemini_3 && !is_gemini_25 {
         return None;

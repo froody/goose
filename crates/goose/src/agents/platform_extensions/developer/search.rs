@@ -182,8 +182,12 @@ impl SearchTool {
 
             let mut matched_lines = Vec::new();
 
-            for line_idx in (actual_start_line - 1)..actual_end_line {
-                let line_text = lines[line_idx];
+            for (line_idx, &line_text) in lines
+                .iter()
+                .enumerate()
+                .take(actual_end_line)
+                .skip(actual_start_line - 1)
+            {
                 let line_num = line_idx + 1;
 
                 if let Some(ref re) = content_re {

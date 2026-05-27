@@ -94,6 +94,8 @@ const GEMINI_OAUTH_PROVIDER_NAME: &str = "gemini_oauth";
 
 // Models available through the Code Assist API
 const GEMINI_OAUTH_KNOWN_MODELS: &[&str] = &[
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
     "gemini-3-pro-preview",
     "gemini-3-flash-preview",
     "gemini-2.5-pro",

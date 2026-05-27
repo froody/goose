@@ -118,7 +118,7 @@
     "env": [
       "NANO_GPT_API_KEY"
     ],
-    "model_count": 525
+    "model_count": 618
   },
   {
     "id": "alibaba-cn",
@@ -129,7 +129,7 @@
     "env": [
       "DASHSCOPE_API_KEY"
     ],
-    "model_count": 82
+    "model_count": 83
   },
   {
     "id": "digitalocean",
@@ -169,7 +169,7 @@
     "display_name": "Kimi For Coding",
     "npm": "@ai-sdk/anthropic",
     "api": "https://api.kimi.com/coding/v1",
-    "doc": "https://www.kimi.com/coding/docs/en/third-party-agents.html",
+    "doc": "https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html",
     "env": [
       "KIMI_API_KEY"
     ],
@@ -327,7 +327,7 @@
     "env": [
       "DASHSCOPE_API_KEY"
     ],
-    "model_count": 50
+    "model_count": 51
   },
   {
     "id": "xiaomi",
@@ -759,7 +759,7 @@
     "env": [
       "OPENCODE_API_KEY"
     ],
-    "model_count": 16
+    "model_count": 17
   },
   {
     "id": "cortecs",
@@ -1178,6 +1178,17 @@
       "HPC_AI_API_KEY"
     ],
     "model_count": 3
+  },
+  {
+    "id": "alibaba-token-plan",
+    "display_name": "Alibaba Token Plan",
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    "doc": "https://www.alibabacloud.com/help/en/model-studio/token-plan-overview",
+    "env": [
+      "ALIBABA_TOKEN_PLAN_API_KEY"
+    ],
+    "model_count": 15
   },
   {
     "id": "tencent-tokenhub",
