@@ -1,4 +1,5 @@
 pub mod edit;
+pub mod search;
 pub mod shell;
 pub mod tree;
 
@@ -7,13 +8,14 @@ use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::ToolCallContext;
 use anyhow::Result;
 use async_trait::async_trait;
-use edit::{EditTools, FileEditParams, FileWriteParams};
+use edit::{EditMultipleParams, EditTools, FileEditParams, FileWriteParams};
 use indoc::indoc;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
     ServerCapabilities, Tool, ToolAnnotations,
 };
 use schemars::{schema_for, JsonSchema};
+use search::{SearchParams, SearchTool};
 use serde_json::Value;
 use shell::{shell_display_name, ShellOutput, ShellParams, ShellTool};
 use std::sync::Arc;
@@ -27,6 +29,7 @@ pub struct DeveloperClient {
     shell_tool: Arc<ShellTool>,
     edit_tools: Arc<EditTools>,
     tree_tool: Arc<TreeTool>,
+    search_tool: Arc<SearchTool>,
 }
 
 fn developer_instructions() -> &'static str {
@@ -39,10 +42,10 @@ fn developer_instructions() -> &'static str {
             responsible for managing your context window, and to minimize unnecessary turns which
             cost the user money.
 
-            For editing software, prefer the flow of using tree to understand the codebase structure
-            and file sizes. When you need to search, prefer findstr or Select-String (via shell).
-            Then use type or Get-Content to gather the context you need, always reading before
-            editing. Use write and edit to efficiently make changes. Test and verify as appropriate.
+            For editing software, prefer the flow of using tree or search to understand the codebase structure
+            and file sizes. When you need to search, prefer search over Shell command findstr/rg.
+            Then use search with output_mode: file_paths_with_content to gather context.
+            Use write and edit_multiple to efficiently make changes. Test and verify as appropriate.
         "}
     } else {
         indoc! {"
@@ -53,10 +56,10 @@ fn developer_instructions() -> &'static str {
             responsible for managing your context window, and to minimize unnecessary turns which
             cost the user money.
 
-            For editing software, prefer the flow of using tree to understand the codebase structure
-            and file sizes. When you need to search, prefer rg which correctly respects gitignored
-            content. Then use cat or sed to gather the context you need, always reading before editing.
-            Use write and edit to efficiently make changes. Test and verify as appropriate.
+            For editing software, prefer the flow of using tree or search to understand the codebase structure
+            and file sizes. When you need to search, prefer search (which is much faster and respects .gitignore).
+            Then use search with output_mode: file_paths_with_content to gather context.
+            Use write and edit_multiple to efficiently make changes. Test and verify as appropriate.
 
             When running Python scripts or commands, always use `python3` instead of `python`.
         "}
@@ -74,6 +77,7 @@ impl DeveloperClient {
             shell_tool: Arc::new(ShellTool::new(context.use_login_shell_path)?),
             edit_tools: Arc::new(EditTools::new()),
             tree_tool: Arc::new(TreeTool::new()),
+            search_tool: Arc::new(SearchTool::new()),
         })
     }
 
@@ -118,6 +122,30 @@ impl DeveloperClient {
                 Some(false),
                 Some(true),
                 Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "edit_multiple".to_string(),
+                "Edit multiple files or apply multiple search/replace blocks atomically in a single turn transaction.".to_string(),
+                Self::schema::<EditMultipleParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Edit Multiple".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "search".to_string(),
+                "Search files by glob patterns, or inspect file contents, or grep lines with content regexes. A single unified high-performance tool.".to_string(),
+                Self::schema::<SearchParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Search".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
                 Some(false),
             )),
             Tool::new(
@@ -198,6 +226,20 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "edit_multiple" => match Self::parse_args::<EditMultipleParams>(arguments) {
+                Ok(params) => Ok(self.edit_tools.file_edit_multiple_with_cwd(params, working_dir)),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
+            "search" => match Self::parse_args::<SearchParams>(arguments) {
+                Ok(params) => Ok(self.search_tool.search_with_cwd(params, working_dir)),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             "tree" => match Self::parse_args::<TreeParams>(arguments) {
                 Ok(params) => Ok(self.tree_tool.tree_with_cwd(params, working_dir)),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -232,7 +274,7 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
 
-        assert_eq!(names, vec!["write", "edit", "shell", "tree"]);
+        assert_eq!(names, vec!["write", "edit", "edit_multiple", "search", "shell", "tree"]);
     }
 
     fn test_context(data_dir: std::path::PathBuf) -> PlatformExtensionContext {
@@ -321,5 +363,31 @@ mod tests {
         let observed = std::fs::canonicalize(first_text(&result)).unwrap();
         let expected = std::fs::canonicalize(&cwd).unwrap();
         assert_eq!(observed, expected);
+    }
+
+    #[tokio::test]
+    async fn developer_client_uses_working_dir_for_search_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = DeveloperClient::new(test_context(temp.path().join("sessions"))).unwrap();
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(cwd.join("search_test.txt"), "hello rust search").unwrap();
+
+        let ctx = ToolCallContext::new("session".to_owned(), Some(cwd.clone()), None);
+        let result = client
+            .call_tool(
+                &ctx,
+                "search",
+                Some(object!({
+                    "file_glob_patterns": vec!["search_test.txt"],
+                    "content_regex": "rust"
+                })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert!(first_text(&result).contains("search_test.txt"));
+        assert!(first_text(&result).contains("hello rust search"));
     }
 }
