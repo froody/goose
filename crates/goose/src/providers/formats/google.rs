@@ -308,6 +308,38 @@ pub fn response_to_message(response: Value) -> Result<Message> {
     let role = Role::Assistant;
     let created = chrono::Utc::now().timestamp();
 
+    // Check if candidates finished with MAX_TOKENS or safety filters
+    if let Some(candidates) = response.get("candidates").and_then(|v| v.as_array()) {
+        if let Some(first_candidate) = candidates.first() {
+            if let Some(reason) = first_candidate
+                .get("finishReason")
+                .or_else(|| first_candidate.get("finish_reason"))
+                .and_then(|v| v.as_str())
+            {
+                match reason {
+                    "STOP" | "STOP_SEQUENCE" => {}
+                    "MAX_TOKENS" => {
+                        Err(ProviderError::ContextLengthExceeded(
+                            "Google API generation stopped due to MAX_TOKENS (maximum output tokens reached).".to_string()
+                        ))?;
+                    }
+                    "SAFETY" | "RECITATION" | "SPII" | "BLOCKLIST" | "PROHIBITED_CONTENT" => {
+                        Err(ProviderError::RequestFailed(format!(
+                            "Google API generation stopped due to safety/policy filter: {}",
+                            reason
+                        )))?;
+                    }
+                    "OTHER" => {
+                        Err(ProviderError::RequestFailed(
+                            "Google API generation stopped due to other reasons.".to_string()
+                        ))?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     let parts = response
         .get("candidates")
         .and_then(|v| v.as_array())
@@ -467,6 +499,38 @@ where
                             vec![content],
                         ).with_id(stream_id.clone());
                         yield (Some(message), None);
+                    }
+                }
+            }
+
+            // Check if candidates finished with MAX_TOKENS or safety filters
+            if let Some(candidates) = chunk.get("candidates").and_then(|v| v.as_array()) {
+                if let Some(first_candidate) = candidates.first() {
+                    if let Some(reason) = first_candidate
+                        .get("finishReason")
+                        .or_else(|| first_candidate.get("finish_reason"))
+                        .and_then(|v| v.as_str())
+                    {
+                        match reason {
+                            "STOP" | "STOP_SEQUENCE" => {}
+                            "MAX_TOKENS" => {
+                                Err(ProviderError::ContextLengthExceeded(
+                                    "Google API generation stopped due to MAX_TOKENS (maximum output tokens reached).".to_string()
+                                ))?;
+                            }
+                            "SAFETY" | "RECITATION" | "SPII" | "BLOCKLIST" | "PROHIBITED_CONTENT" => {
+                                Err(ProviderError::RequestFailed(format!(
+                                    "Google API generation stopped due to safety/policy filter: {}",
+                                    reason
+                                )))?;
+                            }
+                            "OTHER" => {
+                                Err(ProviderError::RequestFailed(
+                                    "Google API generation stopped due to other reasons.".to_string()
+                                ))?;
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -1340,6 +1404,61 @@ data: [DONE]"#;
         }
 
         assert_eq!(text_parts, vec!["Complete"]);
+    }
+
+    #[tokio::test]
+    async fn test_streaming_max_tokens_error() {
+        use futures::StreamExt;
+
+        let stream_with_max_tokens = concat!(
+            r#"data: {"candidates": [{"content": {"role": "model", "#,
+            r#""parts": [{"text": "Hello, I am cut off"}]}, "#,
+            r#""finishReason": "MAX_TOKENS"}]}"#
+        );
+        let lines: Vec<Result<String, anyhow::Error>> = stream_with_max_tokens
+            .lines()
+            .map(|l| Ok(l.to_string()))
+            .collect();
+        let stream = Box::pin(futures::stream::iter(lines));
+        let mut message_stream = std::pin::pin!(response_to_streaming_message(stream));
+
+        // The first item should contain the text part
+        let first = message_stream.next().await;
+        assert!(first.is_some());
+        let (message, _) = first.unwrap().unwrap();
+        assert!(message.is_some());
+        let msg = message.unwrap();
+        if let MessageContent::Text(text) = msg.content.first().unwrap() {
+            assert_eq!(text.text, "Hello, I am cut off");
+        } else {
+            panic!("Expected text chunk");
+        }
+
+        // The second item should yield the ContextLengthExceeded error due to finishReason mapping
+        let second = message_stream.next().await;
+        assert!(second.is_some());
+        let err = second.unwrap();
+        assert!(err.is_err());
+        let err_str = err.unwrap_err().to_string();
+        assert!(err_str.contains("MAX_TOKENS"));
+    }
+
+    #[test]
+    fn test_response_to_message_max_tokens_error() {
+        let response = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "Hello, I am cut off"}]
+                },
+                "finishReason": "MAX_TOKENS"
+            }]
+        });
+
+        let res = response_to_message(response);
+        assert!(res.is_err());
+        let err_str = res.unwrap_err().to_string();
+        assert!(err_str.contains("MAX_TOKENS"));
     }
 
     #[test]
