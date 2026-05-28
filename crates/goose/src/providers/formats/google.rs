@@ -238,7 +238,7 @@ fn process_response_part_impl(
     last_signature: &mut Option<String>,
 ) -> Option<MessageContent> {
     let signature = part.get(THOUGHT_SIGNATURE_KEY).and_then(|v| v.as_str());
-    let is_thought = part
+    let mut is_thought = part
         .get("thought")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
@@ -252,13 +252,37 @@ fn process_response_part_impl(
         if text.is_empty() {
             return None;
         }
+
+        // Vertex AI / Gemini models sometimes prefix thoughts with "thought\n" or "thought "
+        // or wrap them in `<thought>...</thought>` blocks instead of setting the `"thought": true` field.
+        let mut clean_text = text.to_string();
+        if !is_thought {
+            if clean_text.to_lowercase().starts_with("thought\n") {
+                is_thought = true;
+                clean_text = clean_text[8..].to_string();
+            } else if clean_text.to_lowercase().starts_with("thought ") {
+                is_thought = true;
+                clean_text = clean_text[8..].to_string();
+            } else if clean_text.to_lowercase().starts_with("<thought>") {
+                is_thought = true;
+                clean_text = clean_text[9..].to_string();
+                if clean_text.to_lowercase().ends_with("</thought>") {
+                    clean_text = clean_text[..clean_text.len() - 10].to_string();
+                }
+            }
+        }
+
+        if clean_text.is_empty() {
+            return None;
+        }
+
         if is_thought {
             match signature {
-                Some(sig) => Some(MessageContent::thinking(text.to_string(), sig.to_string())),
-                None => Some(MessageContent::thinking(text.to_string(), "")),
+                Some(sig) => Some(MessageContent::thinking(clean_text, sig.to_string())),
+                None => Some(MessageContent::thinking(clean_text, "")),
             }
         } else {
-            Some(MessageContent::text(text.to_string()))
+            Some(MessageContent::text(clean_text))
         }
     } else if text_value.is_some() {
         tracing::warn!(
@@ -1404,6 +1428,24 @@ data: [DONE]"#;
         }
 
         assert_eq!(text_parts, vec!["Complete"]);
+    }
+
+    #[test]
+    fn test_process_response_part_vertex_thought_detection() {
+        let mut sig = None;
+        let response_part = json!({
+            "text": "thought\nHello from Vertex thoughts"
+        });
+        let content = process_response_part_impl(&response_part, &mut sig).unwrap();
+        assert!(content.as_thinking().is_some());
+        assert_eq!(content.as_thinking().unwrap().thinking, "Hello from Vertex thoughts");
+
+        let response_part_tag = json!({
+            "text": "<thought>Hello wrapped thoughts</thought>"
+        });
+        let content_tag = process_response_part_impl(&response_part_tag, &mut sig).unwrap();
+        assert!(content_tag.as_thinking().is_some());
+        assert_eq!(content_tag.as_thinking().unwrap().thinking, "Hello wrapped thoughts");
     }
 
     #[tokio::test]
