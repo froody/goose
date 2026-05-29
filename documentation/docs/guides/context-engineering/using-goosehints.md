@@ -115,7 +115,7 @@ goose supports hierarchical local hints in git repositories. When your session s
 
 This is especially useful in monorepos or large projects where different parts of the codebase have different conventions.
 
-By default, goose looks for both `AGENTS.md` and `.goosehints` at each level. If you're using [custom context files](#custom-context-files), goose applies the same nested loading behavior to those filenames too.
+By default, goose looks for `.goosehints`, `AGENTS.md`, and `CLAUDE.md` at each level. If you're using [custom context files](#custom-context-files), goose applies the same nested loading behavior to those filenames too.
 
 As a best practice, `.goosehints` at each level should only include hints relevant to that scope:
 - **Root level**: Include project-wide standards, build processes, and general guidelines
@@ -222,7 +222,7 @@ Like prompts, this is not an extensive list to shape your `.goosehints` file. Yo
 
 ## Custom Context Files
 
-goose looks for `AGENTS.md` then `.goosehints` files by default, but you can configure a different filename or multiple context files using the `CONTEXT_FILE_NAMES` environment variable. This is useful for:
+goose looks for `.goosehints`, `AGENTS.md`, and `CLAUDE.md` files by default, but you can configure a different filename or multiple context files using the `CONTEXT_FILE_NAMES` environment variable. This is useful for:
 
 - **Tool compatibility**: Use conventions from other AI tools (e.g. `CLAUDE.md`)
 - **Organization**: Separate frequently-used rules into multiple files that load automatically
@@ -236,7 +236,7 @@ Here's how it works:
 
 ### Configuration
 
-Set the `CONTEXT_FILE_NAMES` environment variable to a JSON array of filenames. The default is `["AGENTS.md", ".goosehints"]`.
+Set the `CONTEXT_FILE_NAMES` environment variable to a JSON array of filenames. The default is `[".goosehints", "AGENTS.md", "CLAUDE.md"]`.
 
 ```bash
 # Single custom file
