@@ -172,6 +172,8 @@ pub struct CliSession {
     edit_mode: Option<EditMode>,
     retry_config: Option<RetryConfig>,
     output_format: String,
+    #[cfg(unix)]
+    redraw_state: Arc<std::sync::Mutex<RedrawState>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +261,12 @@ impl CliSession {
             .map(|session| session.conversation.unwrap_or_default())
             .unwrap();
 
+        #[cfg(unix)]
+        let redraw_state = Arc::new(std::sync::Mutex::new(RedrawState {
+            messages: messages.clone(),
+            debug,
+        }));
+
         CliSession {
             agent,
             messages,
@@ -271,6 +279,8 @@ impl CliSession {
             edit_mode,
             retry_config,
             output_format,
+            #[cfg(unix)]
+            redraw_state,
         }
     }
 
@@ -512,7 +522,25 @@ impl CliSession {
         let history_manager = HistoryManager::new();
         history_manager.load(&mut editor);
 
+        #[cfg(unix)]
+        let sigcont_task = {
+            let redraw_state = self.redraw_state.clone();
+            let mut printer = editor.create_external_printer()?;
+            tokio::spawn(async move {
+                if let Ok(mut sigcont) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGCONT)) {
+                    while sigcont.recv().await.is_some() {
+                        let state = redraw_state.lock().unwrap();
+                        let history_str = render_history_to_string(&state.messages, state.debug);
+                        
+                        use rustyline::ExternalPrinter as _;
+                        let _ = printer.print(history_str);
+                    }
+                }
+            })
+        };
+
         loop {
+            self.update_redraw_state();
             self.display_context_usage().await?;
 
             let conversation_strings: Vec<String> = self
@@ -535,6 +563,9 @@ impl CliSession {
             self.handle_input(input, &history_manager, &mut editor, &conversation_strings)
                 .await?;
         }
+
+        #[cfg(unix)]
+        sigcont_task.abort();
 
         Ok(())
     }
@@ -1706,6 +1737,16 @@ impl CliSession {
 
     fn push_message(&mut self, message: Message) {
         self.messages.push(message);
+        self.update_redraw_state();
+    }
+
+    fn update_redraw_state(&self) {
+        #[cfg(unix)]
+        {
+            let mut state = self.redraw_state.lock().unwrap();
+            state.messages = self.messages.clone();
+            state.debug = self.debug;
+        }
     }
 }
 
@@ -2176,6 +2217,222 @@ fn build_switched_model_config(
                 .with_toolshim_model(current_model_config.toolshim_model.clone())
         })
         .map_err(|e| anyhow::anyhow!("Failed to create model configuration: {e}"))
+}
+
+#[cfg(unix)]
+struct RedrawState {
+    messages: Conversation,
+    debug: bool,
+}
+
+#[cfg(unix)]
+fn render_history_to_string(messages: &Conversation, debug: bool) -> String {
+    use goose::conversation::message::{MessageContent, ActionRequiredData};
+    let mut out = String::new();
+    out.push_str("\x1B[2J\x1B[1;1H"); // clear screen
+
+    if messages.is_empty() {
+        return out;
+    }
+
+    out.push_str(&format!(
+        "\n  {} {}\n",
+        console::style("↻").cyan(),
+        console::style(format!("{} messages restored", messages.len())).dim()
+    ));
+
+    for message in messages.iter() {
+        for content in &message.content {
+            match content {
+                MessageContent::Text(text) => {
+                    let theme = output::get_theme();
+                    print_markdown_to_string(&text.text, &theme, &mut out);
+                    out.push_str("\n");
+                }
+                MessageContent::Thinking(t) => {
+                    out.push_str("\n");
+                    for line in t.thinking.lines() {
+                        out.push_str(&format!("{}\n", console::style(line).dim().italic()));
+                    }
+                    out.push_str("\n");
+                }
+                MessageContent::ToolRequest(req) => {
+                    if let Ok(call) = &req.tool_call {
+                        let (tool, extension) = split_tool_name(&call.name);
+                        let tool_header = if extension.is_empty() {
+                            format!("  {} {}", console::style("▸").dim(), console::style(&tool).dim())
+                        } else {
+                            format!(
+                                "  {} {} {}",
+                                console::style("▸").dim(),
+                                console::style(&tool).dim(),
+                                console::style(extension).magenta().dim(),
+                            )
+                        };
+                        out.push_str(&format!(
+                            "\n  {}\n{}\n",
+                            console::style("─".repeat(40)).dim(),
+                            tool_header
+                        ));
+                        out.push_str(&format_params(&call.arguments, 1));
+                    }
+                }
+                MessageContent::ToolResponse(resp) => {
+                    if let Ok(result) = &resp.tool_result {
+                        for content in &result.content {
+                            if let Some(text) = content.as_text() {
+                                for line in text.text.lines() {
+                                    out.push_str(&format!("    {}\n", line));
+                                }
+                            }
+                        }
+                    }
+                    if debug {
+                        if let Err(e) = &resp.tool_result {
+                            out.push_str(&format!("    {}\n", console::style(e.to_string()).red().dim()));
+                        }
+                    }
+                }
+                MessageContent::Image(image) => {
+                    out.push_str(&format!(
+                        "Image: [data: {}, type: {}]\n\n",
+                        image.data, image.mime_type
+                    ));
+                }
+                MessageContent::SystemNotification(notification) => {
+                    out.push_str(&format!(
+                        "\n{}\n\n",
+                        console::style(&notification.msg).yellow()
+                    ));
+                }
+                MessageContent::ActionRequired(action) => match &action.data {
+                    ActionRequiredData::ToolConfirmation { tool_name, .. } => {
+                        out.push_str(&format!("Action Required: tool_confirmation ({})\n", tool_name));
+                    }
+                    ActionRequiredData::Elicitation { message, .. } => {
+                        out.push_str(&format!("Action Required: elicitation ({})\n", message));
+                    }
+                    ActionRequiredData::ElicitationResponse { id, .. } => {
+                        out.push_str(&format!("Action Required: elicitation_response ({})\n", id));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn split_tool_name(tool_name: &str) -> (String, String) {
+    let parts: Vec<_> = tool_name.rsplit("__").collect();
+    let tool = parts.first().copied().unwrap_or("unknown");
+    let extension = parts
+        .split_first()
+        .map(|(_, s)| s.iter().rev().copied().collect::<Vec<_>>().join("__"))
+        .unwrap_or_default();
+    (tool.to_string(), extension_display_name(&extension))
+}
+
+#[cfg(unix)]
+fn extension_display_name(name: &str) -> String {
+    match name {
+        "code_execution" => "Code Mode".to_string(),
+        _ => name.to_string(),
+    }
+}
+
+#[cfg(unix)]
+fn format_params(value: &Option<serde_json::Map<String, Value>>, depth: usize) -> String {
+    let mut out = String::new();
+    let indent = "    ".repeat(depth);
+
+    if let Some(json_object) = value {
+        for (key, val) in json_object.iter() {
+            match val {
+                Value::Object(obj) => {
+                    out.push_str(&format!("{}{}:\n", indent, console::style(key).dim()));
+                    out.push_str(&format_params(&Some(obj.clone()), depth + 1));
+                }
+                Value::Array(arr) => {
+                    let all_simple = arr.iter().all(|item| {
+                        matches!(
+                            item,
+                            Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null
+                        )
+                    });
+
+                    if all_simple {
+                        let values: Vec<String> = arr
+                            .iter()
+                            .map(|item| match item {
+                                Value::String(s) => s.clone(),
+                                Value::Number(n) => n.to_string(),
+                                Value::Bool(b) => b.to_string(),
+                                Value::Null => "null".to_string(),
+                                _ => unreachable!(),
+                            })
+                            .collect();
+                        let joined_values = values.join(", ");
+                        out.push_str(&format_value_with_prefix(
+                            &format!("{}{}: ", indent, console::style(key).dim()),
+                            &Value::String(joined_values),
+                        ));
+                    } else {
+                        out.push_str(&format!("{}{}:\n", indent, console::style(key).dim()));
+                        for item in arr {
+                            if let Value::Object(obj) = item {
+                                out.push_str(&format_params(&Some(obj.clone()), depth + 1));
+                            } else {
+                                out.push_str(&format_value_with_prefix(
+                                    &format!("{}  - ", indent),
+                                    item,
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    out.push_str(&format_value_with_prefix(
+                        &format!("{}{}: ", indent, console::style(key).dim()),
+                        val,
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn format_value_with_prefix(prefix: &str, value: &Value) -> String {
+    format!("{}{}\n", prefix, format_value(value))
+}
+
+#[cfg(unix)]
+fn format_value(value: &Value) -> String {
+    let formatted = match value {
+        Value::String(s) => console::style(s.to_string()).green(),
+        Value::Number(n) => console::style(n.to_string()).yellow(),
+        Value::Bool(b) => console::style(b.to_string()).yellow(),
+        Value::Null => console::style("null".to_string()).dim(),
+        _ => unreachable!(),
+    };
+    formatted.to_string()
+}
+
+#[cfg(unix)]
+fn print_markdown_to_string(content: &str, theme: &output::Theme, out: &mut String) {
+    let theme_str = theme.as_str();
+    let mut printer = bat::PrettyPrinter::new();
+    printer
+        .input(bat::Input::from_bytes(content.as_bytes()))
+        .theme(&theme_str)
+        .colored_output(crate::session::output::env_no_color())
+        .language("Markdown")
+        .wrapping_mode(bat::WrappingMode::NoWrapping(true));
+    
+    let _ = printer.print_with_writer(Some(out));
 }
 
 #[cfg(test)]

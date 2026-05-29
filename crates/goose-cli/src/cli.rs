@@ -1453,7 +1453,7 @@ async fn handle_interactive_session(
     identifier: Option<Identifier>,
     resume: bool,
     fork: bool,
-    history: bool,
+    _history: bool,
     session_opts: SessionOptions,
     extension_opts: ExtensionOptions,
 ) -> Result<()> {
@@ -1525,7 +1525,7 @@ async fn handle_interactive_session(
     })
     .await;
 
-    if (resume || fork) && history {
+    if resume || fork {
         session.render_message_history();
     }
 

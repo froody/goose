@@ -34,7 +34,7 @@ pub enum Theme {
 }
 
 impl Theme {
-    fn as_str(&self) -> String {
+    pub fn as_str(&self) -> String {
         match self {
             Theme::Light => Config::global()
                 .get_param::<String>("GOOSE_CLI_LIGHT_THEME")

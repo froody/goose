@@ -19,6 +19,7 @@ pub fn get_context_filenames() -> Vec<String> {
             vec![
                 GOOSE_HINTS_FILENAME.to_string(),
                 AGENTS_MD_FILENAME.to_string(),
+                "CLAUDE.md".to_string(),
             ]
         })
 }
@@ -360,6 +361,17 @@ mod tests {
 
         assert!(hints.contains("Custom hints file content"));
         assert!(!hints.contains(".goosehints")); // Make sure it's not loading the default
+    }
+
+    #[test]
+    fn test_claudemd_loaded_by_default() {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(dir.path().join("CLAUDE.md"), "Claude guidelines content").unwrap();
+        let gitignore = create_dummy_gitignore();
+        let hints = load_hint_files(dir.path(), &get_context_filenames(), &gitignore);
+
+        assert!(hints.contains("Claude guidelines content"));
     }
 
     #[test]
