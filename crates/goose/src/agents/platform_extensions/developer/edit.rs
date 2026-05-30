@@ -192,15 +192,21 @@ impl EditTools {
                 let matches: Vec<_> = current_content.match_indices(&edit_item.old_text).collect();
                 match matches.len() {
                     0 => {
-                        let suggestion = find_similar_context(&current_content, &edit_item.old_text);
-                        let mut msg = format!("Edit {} in {}: No match found for specify text.", idx + 1, file_edit.file_path);
+                        let suggestion =
+                            find_similar_context(&current_content, &edit_item.old_text);
+                        let mut msg = format!(
+                            "Edit {} in {}: No match found for specify text.",
+                            idx + 1,
+                            file_edit.file_path
+                        );
                         if let Some(hint) = suggestion {
                             msg.push_str(&format!("\nDid you mean:\n```\n{}\n```", hint));
                         }
                         file_errors.push(msg);
                     }
                     1 => {
-                        current_content = current_content.replacen(&edit_item.old_text, &edit_item.new_text, 1);
+                        current_content =
+                            current_content.replacen(&edit_item.old_text, &edit_item.new_text, 1);
                     }
                     n => {
                         file_errors.push(format!(
@@ -635,19 +641,17 @@ mod tests {
                         EditItem {
                             old_text: "alpha".to_string(),
                             new_text: "gamma".to_string(),
-                        }
-                    ]
+                        },
+                    ],
                 },
                 FileEdit {
                     file_path: path2.to_string_lossy().to_string(),
-                    edits: vec![
-                        EditItem {
-                            old_text: "bar".to_string(),
-                            new_text: "baz".to_string(),
-                        }
-                    ]
-                }
-            ]
+                    edits: vec![EditItem {
+                        old_text: "bar".to_string(),
+                        new_text: "baz".to_string(),
+                    }],
+                },
+            ],
         };
 
         let result = tools.file_edit_multiple_with_cwd(params, None);
@@ -670,23 +674,19 @@ mod tests {
             edits: vec![
                 FileEdit {
                     file_path: path1.to_string_lossy().to_string(),
-                    edits: vec![
-                        EditItem {
-                            old_text: "world".to_string(),
-                            new_text: "everyone".to_string(),
-                        }
-                    ]
+                    edits: vec![EditItem {
+                        old_text: "world".to_string(),
+                        new_text: "everyone".to_string(),
+                    }],
                 },
                 FileEdit {
                     file_path: path2.to_string_lossy().to_string(),
-                    edits: vec![
-                        EditItem {
-                            old_text: "nonexistent".to_string(),
-                            new_text: "baz".to_string(),
-                        }
-                    ]
-                }
-            ]
+                    edits: vec![EditItem {
+                        old_text: "nonexistent".to_string(),
+                        new_text: "baz".to_string(),
+                    }],
+                },
+            ],
         };
 
         let result = tools.file_edit_multiple_with_cwd(params, None);
