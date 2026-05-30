@@ -226,6 +226,7 @@ mod tests {
 }
 
 pub fn session_start_time() -> chrono::DateTime<chrono::Utc> {
-    static START_TIME: std::sync::OnceLock<chrono::DateTime<chrono::Utc>> = std::sync::OnceLock::new();
+    static START_TIME: std::sync::OnceLock<chrono::DateTime<chrono::Utc>> =
+        std::sync::OnceLock::new();
     *START_TIME.get_or_init(chrono::Utc::now)
 }

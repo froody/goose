@@ -15,7 +15,7 @@ use rmcp::model::{
     ServerCapabilities, Tool, ToolAnnotations,
 };
 use schemars::{schema_for, JsonSchema};
-use search::{SearchParams, SearchTool};
+use search::{MultiSearchParams, SearchParams, SearchTool};
 use serde_json::Value;
 use shell::{shell_display_name, ShellOutput, ShellParams, ShellTool};
 use std::sync::Arc;
@@ -43,8 +43,8 @@ fn developer_instructions() -> &'static str {
             cost the user money.
 
             For editing software, prefer the flow of using tree or search to understand the codebase structure
-            and file sizes. When you need to search, prefer search over Shell command findstr/rg.
-            Then use search with output_mode: file_paths_with_content to gather context.
+            and file sizes. When you need to search, prefer search/multi_search over Shell command findstr/rg.
+            Then use search/multi_search with output_mode: file_paths_with_content to gather context.
             Use write and edit_multiple to efficiently make changes. Test and verify as appropriate.
         "}
     } else {
@@ -57,8 +57,8 @@ fn developer_instructions() -> &'static str {
             cost the user money.
 
             For editing software, prefer the flow of using tree or search to understand the codebase structure
-            and file sizes. When you need to search, prefer search (which is much faster and respects .gitignore).
-            Then use search with output_mode: file_paths_with_content to gather context.
+            and file sizes. When you need to search, prefer search/multi_search (which is much faster and respects .gitignore).
+            Then use search/multi_search with output_mode: file_paths_with_content to gather context.
             Use write and edit_multiple to efficiently make changes. Test and verify as appropriate.
 
             When running Python scripts or commands, always use `python3` instead of `python`.
@@ -143,6 +143,18 @@ impl DeveloperClient {
             )
             .annotate(ToolAnnotations::from_raw(
                 Some("Search".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
+            Tool::new(
+                "multi_search".to_string(),
+                "Execute multiple search queries in a single turn batch to save round-trips.".to_string(),
+                Self::schema::<MultiSearchParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Multi Search".to_string()),
                 Some(true),
                 Some(false),
                 Some(true),
@@ -242,6 +254,13 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "multi_search" => match Self::parse_args::<MultiSearchParams>(arguments) {
+                Ok(params) => Ok(self.search_tool.multi_search_with_cwd(params, working_dir)),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             "tree" => match Self::parse_args::<TreeParams>(arguments) {
                 Ok(params) => Ok(self.tree_tool.tree_with_cwd(params, working_dir)),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -278,7 +297,15 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["write", "edit", "edit_multiple", "search", "shell", "tree"]
+            vec![
+                "write",
+                "edit",
+                "edit_multiple",
+                "search",
+                "multi_search",
+                "shell",
+                "tree"
+            ]
         );
     }
 
@@ -394,5 +421,37 @@ mod tests {
         assert_eq!(result.is_error, Some(false));
         assert!(first_text(&result).contains("search_test.txt"));
         assert!(first_text(&result).contains("hello rust search"));
+    }
+
+    #[tokio::test]
+    async fn developer_client_uses_working_dir_for_multi_search_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = DeveloperClient::new(test_context(temp.path().join("sessions"))).unwrap();
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(cwd.join("multi_search_test.txt"), "hello rust multi-search").unwrap();
+
+        let ctx = ToolCallContext::new("session".to_owned(), Some(cwd.clone()), None);
+        let result = client
+            .call_tool(
+                &ctx,
+                "multi_search",
+                Some(object!({
+                    "searches": vec![
+                        object!({
+                            "file_glob_patterns": vec!["multi_search_test.txt"],
+                            "content_regex": "multi-search"
+                        })
+                    ]
+                })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        let text = first_text(&result);
+        assert!(text.contains("Search #1"));
+        assert!(text.contains("multi_search_test.txt"));
+        assert!(text.contains("hello rust multi-search"));
     }
 }

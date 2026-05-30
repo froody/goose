@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
 pub struct SearchParams {
     /// Glob patterns of files to match (e.g., ["src/**/*.rs"] or ["src/lib.rs#10-50"])
     pub file_glob_patterns: Vec<String>,
@@ -24,6 +24,12 @@ pub struct SearchParams {
     /// Case-insensitive search toggle
     #[serde(default)]
     pub case_insensitive: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Clone)]
+pub struct MultiSearchParams {
+    /// List of search queries to execute in batch
+    pub searches: Vec<SearchParams>,
 }
 
 pub struct SearchTool;
@@ -46,16 +52,7 @@ impl SearchTool {
     }
 
     #[allow(clippy::needless_range_loop)]
-    pub fn search_with_cwd(
-        &self,
-        params: SearchParams,
-        working_dir: Option<&Path>,
-    ) -> CallToolResult {
-        let root = working_dir
-            .map(Path::to_path_buf)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
-
+    pub fn perform_search(&self, params: &SearchParams, root: &Path) -> Result<String, String> {
         // 1. Parse line ranges off exact files
         let mut targets = Vec::new();
         for pat in &params.file_glob_patterns {
@@ -91,7 +88,7 @@ impl SearchTool {
 
         // Second, walk directory to match wildcards (if any compiled globs exist)
         if !compiled_globs.is_empty() && matched_files.len() < file_limit {
-            let mut builder = WalkBuilder::new(&root);
+            let mut builder = WalkBuilder::new(root);
             builder.git_ignore(true);
             builder.git_exclude(true);
             builder.git_global(true);
@@ -102,7 +99,7 @@ impl SearchTool {
             for entry in builder.build().flatten() {
                 if entry.file_type().is_some_and(|t| t.is_file()) {
                     let path = entry.path();
-                    let rel_path = match path.strip_prefix(&root) {
+                    let rel_path = match path.strip_prefix(root) {
                         Ok(p) => p.to_string_lossy().to_string(),
                         Err(_) => continue,
                     };
@@ -123,9 +120,7 @@ impl SearchTool {
         }
 
         if matched_files.is_empty() {
-            return CallToolResult::success(vec![Content::text(
-                "No files matched the specified patterns.",
-            )]);
+            return Ok("No files matched the specified patterns.".to_string());
         }
 
         // 4. Content regex compilation
@@ -136,9 +131,7 @@ impl SearchTool {
             match builder.build() {
                 Ok(re) => Some(re),
                 Err(e) => {
-                    return CallToolResult::error(vec![Content::text(format!(
-                        "Invalid content_regex: {e}"
-                    ))]);
+                    return Err(format!("Invalid content_regex: {e}"));
                 }
             }
         } else {
@@ -157,7 +150,7 @@ impl SearchTool {
 
         for (file_path, suffix_range) in matched_files {
             let rel_path = file_path
-                .strip_prefix(&root)
+                .strip_prefix(root)
                 .unwrap_or(&file_path)
                 .to_string_lossy()
                 .to_string();
@@ -238,12 +231,61 @@ impl SearchTool {
         }
 
         if printed_count == 0 {
-            CallToolResult::success(vec![Content::text(
-                "No content matches found inside the files.",
-            )])
+            Ok("No content matches found inside the files.".to_string())
         } else {
-            CallToolResult::success(vec![Content::text(final_output)])
+            Ok(final_output)
         }
+    }
+
+    pub fn search_with_cwd(
+        &self,
+        params: SearchParams,
+        working_dir: Option<&Path>,
+    ) -> CallToolResult {
+        let root = working_dir
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        match self.perform_search(&params, &root) {
+            Ok(output) => CallToolResult::success(vec![Content::text(output)]),
+            Err(err) => CallToolResult::error(vec![Content::text(err)]),
+        }
+    }
+
+    pub fn multi_search_with_cwd(
+        &self,
+        params: MultiSearchParams,
+        working_dir: Option<&Path>,
+    ) -> CallToolResult {
+        let root = working_dir
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let mut final_output = String::new();
+
+        for (idx, search_param) in params.searches.iter().enumerate() {
+            let search_num = idx + 1;
+            let file_globs = search_param.file_glob_patterns.join(", ");
+            let content_regex_str = search_param.content_regex.as_deref().unwrap_or("<none>");
+
+            final_output.push_str(&format!(
+                "### Search #{search_num} (globs: [{file_globs}], regex: \"{content_regex_str}\")\n"
+            ));
+
+            match self.perform_search(search_param, &root) {
+                Ok(output) => {
+                    final_output.push_str(&output);
+                }
+                Err(err) => {
+                    final_output.push_str(&format!("Error: {err}\n"));
+                }
+            }
+            final_output.push('\n');
+        }
+
+        CallToolResult::success(vec![Content::text(final_output)])
     }
 }
 
@@ -341,5 +383,55 @@ mod tests {
         let re = compile_glob("src/*.rs").unwrap();
         assert!(re.is_match("src/main.rs"));
         assert!(!re.is_match("src/foo/bar/lib.rs"));
+    }
+
+    #[test]
+    fn test_multi_search_with_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("f1.txt"), "apple pie\nbanana cream").unwrap();
+        fs::write(root.join("f2.txt"), "cherry tart\napple crumble").unwrap();
+
+        let tool = SearchTool::new();
+        let params = MultiSearchParams {
+            searches: vec![
+                SearchParams {
+                    file_glob_patterns: vec!["f1.txt".to_string()],
+                    content_regex: Some("banana".to_string()),
+                    output_mode: None,
+                    lines_per_file: None,
+                    file_limit: None,
+                    multiline: false,
+                    case_insensitive: false,
+                },
+                SearchParams {
+                    file_glob_patterns: vec!["f*.txt".to_string()],
+                    content_regex: Some("apple".to_string()),
+                    output_mode: None,
+                    lines_per_file: None,
+                    file_limit: None,
+                    multiline: false,
+                    case_insensitive: false,
+                },
+            ],
+        };
+
+        let result = tool.multi_search_with_cwd(params, Some(root));
+        assert_eq!(result.is_error, Some(false));
+
+        let text = match &result.content[0].raw {
+            rmcp::model::RawContent::Text(t) => &t.text,
+            _ => panic!("Expected text content"),
+        };
+
+        assert!(text.contains("Search #1"));
+        assert!(text.contains("Search #2"));
+        let sections: Vec<&str> = text.split("### Search #2").collect();
+        assert_eq!(sections.len(), 2);
+        assert!(sections[0].contains("banana cream"));
+        assert!(!sections[0].contains("apple pie")); // Not matched in search #1
+
+        assert!(sections[1].contains("apple pie"));
+        assert!(sections[1].contains("apple crumble"));
     }
 }
