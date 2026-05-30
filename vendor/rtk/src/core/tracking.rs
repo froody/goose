@@ -630,6 +630,64 @@ impl Tracker {
         })
     }
 
+    pub fn get_goose_summary(&self, since: Option<DateTime<Utc>>) -> Result<GainSummary> {
+        let mut total_commands = 0usize;
+        let mut total_input = 0usize;
+        let mut total_output = 0usize;
+        let mut total_saved = 0usize;
+        let mut total_time_ms = 0u64;
+
+        let since_str = since.map(|dt| dt.to_rfc3339());
+
+        let mut stmt = self.conn.prepare(
+            "SELECT input_tokens, output_tokens, saved_tokens, exec_time_ms
+             FROM commands
+             WHERE rtk_cmd LIKE 'goose %' AND (?1 IS NULL OR timestamp >= ?1)",
+        )?;
+
+        let rows = stmt.query_map(params![since_str], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as usize,
+                row.get::<_, i64>(1)? as usize,
+                row.get::<_, i64>(2)? as usize,
+                row.get::<_, i64>(3)? as u64,
+            ))
+        })?;
+
+        for row in rows {
+            let (input, output, saved, time_ms) = row?;
+            total_commands += 1;
+            total_input += input;
+            total_output += output;
+            total_saved += saved;
+            total_time_ms += time_ms;
+        }
+
+        let avg_savings_pct = if total_input > 0 {
+            (total_saved as f64 / total_input as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let avg_time_ms = if total_commands > 0 {
+            total_time_ms / total_commands as u64
+        } else {
+            0
+        };
+
+        Ok(GainSummary {
+            total_commands,
+            total_input,
+            total_output,
+            total_saved,
+            avg_savings_pct,
+            total_time_ms,
+            avg_time_ms,
+            by_command: Vec::new(),
+            by_day: Vec::new(),
+        })
+    }
+
     fn get_by_command(
         &self,
         project_path: Option<&str>, // added

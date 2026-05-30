@@ -436,6 +436,19 @@ impl ShellTool {
         };
         let mut rendered = render_result.text;
 
+        // Record savings in the RTK database
+        if let Ok(tracker) = rtk::core::tracking::Tracker::new() {
+            let input_tokens = rtk::core::tracking::estimate_tokens(&interleaved);
+            let output_tokens = rtk::core::tracking::estimate_tokens(&rendered);
+            let _ = tracker.record(
+                &params.command,
+                &format!("goose {}", params.command),
+                input_tokens,
+                output_tokens,
+                0, // timing
+            );
+        }
+
         // Collect truncation notices from stdout, stderr, and interleaved output.
         // These are delivered as a separate Content block so the model sees them as
         // instructions rather than part of the command's data output.

@@ -211,6 +211,10 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
 
     match input {
         "/exit" | "/quit" => Some(InputResult::Exit),
+        "/rtk-gain" => {
+            print_rtk_gain();
+            Some(InputResult::Retry)
+        }
         "/?" | "/help" => {
             print_help();
             print_editor_help();
@@ -425,6 +429,7 @@ fn print_help() {
 /recipe [filepath] - Generate a recipe from the current conversation and save it to the specified filepath (must end with .yaml).
                        If no filepath is provided, it will be saved to ./recipe.yaml.
 /compact - Compact the current conversation to reduce context length while preserving key information.
+/rtk-gain - Display accumulated token savings from in-process RTK filters.
 /edit [text] - Open your prompt editor to compose a message. Optionally pre-fill with text.
                Uses $GOOSE_PROMPT_EDITOR, $VISUAL, or $EDITOR (in that order).
 /skills - List available skills or enable skills by name (usage: /skills [<name>...])
@@ -461,6 +466,78 @@ fn print_editor_help() {
   When goose_prompt_editor is set, the editor is used for every prompt by default.
   To use inline prompts with on-demand /edit: goose configure set goose_prompt_editor_always false"
     );
+}
+
+fn print_rtk_gain() {
+    use comfy_table::Table;
+    use rtk::core::tracking::Tracker;
+
+    println!("\n{}", console::style("RTK Token Savings").bold().cyan());
+    println!("{}", console::style("=================").dim());
+
+    let tracker = match Tracker::new() {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Error: Failed to open tracking database: {}", e);
+            return;
+        }
+    };
+
+    let session_start = goose::utils::session_start_time();
+
+    let session_summary = tracker.get_goose_summary(Some(session_start));
+    let history_summary = tracker.get_goose_summary(None);
+
+    let mut table = Table::new();
+    table.load_preset(comfy_table::presets::UTF8_FULL);
+    table.set_header(vec!["Metric", "Current Session", "All Goose History"]);
+
+    match (session_summary, history_summary) {
+        (Ok(session), Ok(history)) => {
+            table.add_row(vec![
+                "Total Commands".to_string(),
+                session.total_commands.to_string(),
+                history.total_commands.to_string(),
+            ]);
+            table.add_row(vec![
+                "Input Tokens".to_string(),
+                format_tokens_count(session.total_input),
+                format_tokens_count(history.total_input),
+            ]);
+            table.add_row(vec![
+                "Output Tokens".to_string(),
+                format_tokens_count(session.total_output),
+                format_tokens_count(history.total_output),
+            ]);
+            table.add_row(vec![
+                "Tokens Saved".to_string(),
+                format!(
+                    "{} ({:.1}%)",
+                    format_tokens_count(session.total_saved),
+                    session.avg_savings_pct
+                ),
+                format!(
+                    "{} ({:.1}%)",
+                    format_tokens_count(history.total_saved),
+                    history.avg_savings_pct
+                ),
+            ]);
+            println!("{table}");
+        }
+        _ => {
+            println!("Error: Failed to query token savings.");
+        }
+    }
+}
+
+fn format_tokens_count(tokens: usize) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
 }
 
 #[cfg(test)]
