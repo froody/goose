@@ -224,3 +224,8 @@ mod tests {
         assert!(split_command_args("'unmatched").is_err());
     }
 }
+
+pub fn session_start_time() -> chrono::DateTime<chrono::Utc> {
+    static START_TIME: std::sync::OnceLock<chrono::DateTime<chrono::Utc>> = std::sync::OnceLock::new();
+    *START_TIME.get_or_init(chrono::Utc::now)
+}
