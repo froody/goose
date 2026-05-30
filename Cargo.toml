@@ -3,6 +3,7 @@ members = [
     "crates/*",
     # Mainly for cargo-machete to not error out during inspection.
     "vendor/v8",
+    "vendor/rtk",
 ]
 resolver = "2"
 
@@ -20,6 +21,7 @@ uninlined_format_args = "allow"
 string_slice = "warn"
 
 [workspace.dependencies]
+rtk = { path = "vendor/rtk" }
 rmcp = { version = "1.4", default-features = false, features = ["schemars", "auth"] }
 agent-client-protocol-schema = { version = "0.12", default-features = false, features = ["unstable"] }
 agent-client-protocol = { version = "0.11", default-features = false }

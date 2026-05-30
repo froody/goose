@@ -375,7 +375,25 @@ impl ShellTool {
         };
 
         // Derive stdout, stderr, and interleaved display from the single tagged-line buffer
-        let (raw_stdout, raw_stderr, interleaved) = split_lines(&execution.lines);
+        let (mut raw_stdout, mut raw_stderr, mut interleaved) = split_lines(&execution.lines);
+
+        // Apply RTK declarative TOML filter if matched
+        if let Some(filter) = rtk::core::toml_filter::find_matching_filter(&params.command) {
+            tracing::info!("Applying RTK filter: {}", filter.name);
+            if filter.filter_stderr {
+                // Merge stdout and stderr for filtering
+                let combined = format!("{}{}", raw_stdout, raw_stderr);
+                let filtered = rtk::core::toml_filter::apply_filter(filter, &combined);
+                raw_stdout = filtered;
+                raw_stderr = String::new();
+                interleaved = raw_stdout.clone();
+            } else {
+                // Filter stdout only
+                raw_stdout = rtk::core::toml_filter::apply_filter(filter, &raw_stdout);
+                // Re-derive interleaved since stdout has changed
+                interleaved = format!("{}{}", raw_stdout, raw_stderr);
+            }
+        }
 
         let output_dir = self.output_dir.path();
         let slot = self.call_index.fetch_add(1, Ordering::Relaxed) % OUTPUT_SLOTS;
@@ -753,8 +771,11 @@ fn truncate_output(
 
     let output_path = save_full_output(full_output, label, output_dir)?;
 
-    let preview_start = total_lines.saturating_sub(OUTPUT_PREVIEW_LINES);
-    let preview = lines[preview_start..].join("\n");
+    let preview = rtk::core::filter::smart_truncate(
+        full_output,
+        OUTPUT_PREVIEW_LINES,
+        &rtk::core::filter::Language::Unknown,
+    );
 
     let reason = if exceeded_lines {
         format!("Output exceeded {OUTPUT_LIMIT_LINES} line limit ({total_lines} lines total).")
@@ -917,9 +938,10 @@ mod tests {
         let result = render_output(&input, "test_lines", dir.path()).unwrap();
         let preview = &result.text;
 
-        assert_eq!(preview.lines().count(), OUTPUT_PREVIEW_LINES);
-        assert!(preview.starts_with("line 2450"));
-        assert!(preview.contains("line 2499"));
+        assert_eq!(preview.lines().count(), 26);
+        assert!(preview.starts_with("line 0"));
+        assert!(preview.contains("line 24"));
+        assert!(preview.contains("[2475 more lines]"));
 
         let info = result
             .truncation
@@ -1048,5 +1070,19 @@ mod tests {
             text.contains("after"),
             "should capture output after background cmd"
         );
+    }
+
+    #[test]
+    fn test_rtk_toml_filter_matching_and_filtering() {
+        let filter_opt = rtk::core::toml_filter::find_matching_filter("ping 127.0.0.1");
+        assert!(filter_opt.is_some());
+        let filter = filter_opt.unwrap();
+        assert_eq!(filter.name, "ping");
+
+        let input = "PING example.com (93.184.216.34): 56 data bytes\n64 bytes from 93.184.216.34: icmp_seq=0 ttl=56 time=14.2 ms\n--- example.com ping statistics ---\n4 packets transmitted, 4 packets received, 0.0% packet loss\n";
+        let filtered = rtk::core::toml_filter::apply_filter(filter, input);
+        assert!(!filtered.contains("PING "));
+        assert!(!filtered.contains("64 bytes from"));
+        assert!(filtered.contains("--- example.com ping statistics ---"));
     }
 }

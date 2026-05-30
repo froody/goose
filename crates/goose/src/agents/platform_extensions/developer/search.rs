@@ -1,10 +1,10 @@
-use std::fs;
-use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 use rmcp::model::{CallToolResult, Content};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchParams {
@@ -34,12 +34,23 @@ struct SuffixRange {
     end_line: Option<usize>,
 }
 
+impl Default for SearchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchTool {
     pub fn new() -> Self {
         Self
     }
 
-    pub fn search_with_cwd(&self, params: SearchParams, working_dir: Option<&Path>) -> CallToolResult {
+    #[allow(clippy::needless_range_loop)]
+    pub fn search_with_cwd(
+        &self,
+        params: SearchParams,
+        working_dir: Option<&Path>,
+    ) -> CallToolResult {
         let root = working_dir
             .map(Path::to_path_buf)
             .or_else(|| std::env::current_dir().ok())
@@ -112,7 +123,9 @@ impl SearchTool {
         }
 
         if matched_files.is_empty() {
-            return CallToolResult::success(vec![Content::text("No files matched the specified patterns.")]);
+            return CallToolResult::success(vec![Content::text(
+                "No files matched the specified patterns.",
+            )]);
         }
 
         // 4. Content regex compilation
@@ -123,7 +136,9 @@ impl SearchTool {
             match builder.build() {
                 Ok(re) => Some(re),
                 Err(e) => {
-                    return CallToolResult::error(vec![Content::text(format!("Invalid content_regex: {e}"))]);
+                    return CallToolResult::error(vec![Content::text(format!(
+                        "Invalid content_regex: {e}"
+                    ))]);
                 }
             }
         } else {
@@ -131,14 +146,21 @@ impl SearchTool {
         };
 
         // 5. Build Output
-        let output_mode = params.output_mode.as_deref().unwrap_or("paths_with_content");
+        let output_mode = params
+            .output_mode
+            .as_deref()
+            .unwrap_or("paths_with_content");
         let mut final_output = String::new();
         let lines_per_file = params.lines_per_file.unwrap_or(200);
 
         let mut printed_count = 0;
 
         for (file_path, suffix_range) in matched_files {
-            let rel_path = file_path.strip_prefix(&root).unwrap_or(&file_path).to_string_lossy().to_string();
+            let rel_path = file_path
+                .strip_prefix(&root)
+                .unwrap_or(&file_path)
+                .to_string_lossy()
+                .to_string();
             let file_content = match fs::read_to_string(&file_path) {
                 Ok(c) => c,
                 Err(_) => continue,
@@ -193,9 +215,12 @@ impl SearchTool {
                     final_output.push_str(&format!("{num:4}: {text}\n"));
                 }
                 if matched_lines.len() > count {
-                    final_output.push_str(&format!("... ({} more matches)\n", matched_lines.len() - count));
+                    final_output.push_str(&format!(
+                        "... ({} more matches)\n",
+                        matched_lines.len() - count
+                    ));
                 }
-                final_output.push_str("\n");
+                final_output.push('\n');
             } else if output_mode == "file_paths_with_content" {
                 final_output.push_str(&format!("=== File: {rel_path} ===\n"));
                 let count = matched_lines.len().min(lines_per_file);
@@ -203,20 +228,26 @@ impl SearchTool {
                     final_output.push_str(&format!("{num:4}: {text}\n"));
                 }
                 if matched_lines.len() > count {
-                    final_output.push_str(&format!("... ({} lines truncated)\n", matched_lines.len() - count));
+                    final_output.push_str(&format!(
+                        "... ({} lines truncated)\n",
+                        matched_lines.len() - count
+                    ));
                 }
-                final_output.push_str("\n");
+                final_output.push('\n');
             }
         }
 
         if printed_count == 0 {
-            CallToolResult::success(vec![Content::text("No content matches found inside the files.")])
+            CallToolResult::success(vec![Content::text(
+                "No content matches found inside the files.",
+            )])
         } else {
             CallToolResult::success(vec![Content::text(final_output)])
         }
     }
 }
 
+#[allow(clippy::string_slice)]
 fn parse_suffix_range(pattern: &str) -> SuffixRange {
     if let Some(hash_pos) = pattern.find('#') {
         let (path_part, suffix) = pattern.split_at(hash_pos);
@@ -225,7 +256,10 @@ fn parse_suffix_range(pattern: &str) -> SuffixRange {
         let (start_line, end_line) = if let Some(dash_pos) = range_part.find('-') {
             let (start_str, end_str) = range_part.split_at(dash_pos);
             let end_str = &end_str[1..]; // skip '-'
-            (start_str.parse::<usize>().ok(), end_str.parse::<usize>().ok())
+            (
+                start_str.parse::<usize>().ok(),
+                end_str.parse::<usize>().ok(),
+            )
         } else {
             (range_part.parse::<usize>().ok(), None)
         };

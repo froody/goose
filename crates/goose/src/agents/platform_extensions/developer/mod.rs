@@ -227,7 +227,9 @@ impl McpClientTrait for DeveloperClient {
                 .with_priority(0.0)])),
             },
             "edit_multiple" => match Self::parse_args::<EditMultipleParams>(arguments) {
-                Ok(params) => Ok(self.edit_tools.file_edit_multiple_with_cwd(params, working_dir)),
+                Ok(params) => Ok(self
+                    .edit_tools
+                    .file_edit_multiple_with_cwd(params, working_dir)),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
                     "Error: {error}"
                 ))
@@ -274,7 +276,10 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
 
-        assert_eq!(names, vec!["write", "edit", "edit_multiple", "search", "shell", "tree"]);
+        assert_eq!(
+            names,
+            vec!["write", "edit", "edit_multiple", "search", "shell", "tree"]
+        );
     }
 
     fn test_context(data_dir: std::path::PathBuf) -> PlatformExtensionContext {

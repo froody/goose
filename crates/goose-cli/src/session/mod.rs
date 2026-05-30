@@ -527,11 +527,13 @@ impl CliSession {
             let redraw_state = self.redraw_state.clone();
             let mut printer = editor.create_external_printer()?;
             tokio::spawn(async move {
-                if let Ok(mut sigcont) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(libc::SIGCONT)) {
+                if let Ok(mut sigcont) = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::from_raw(libc::SIGCONT),
+                ) {
                     while sigcont.recv().await.is_some() {
                         let state = redraw_state.lock().unwrap();
                         let history_str = render_history_to_string(&state.messages, state.debug);
-                        
+
                         use rustyline::ExternalPrinter as _;
                         let _ = printer.print(history_str);
                     }
@@ -2227,7 +2229,7 @@ struct RedrawState {
 
 #[cfg(unix)]
 fn render_history_to_string(messages: &Conversation, debug: bool) -> String {
-    use goose::conversation::message::{MessageContent, ActionRequiredData};
+    use goose::conversation::message::{ActionRequiredData, MessageContent};
     let mut out = String::new();
     out.push_str("\x1B[2J\x1B[1;1H"); // clear screen
 
@@ -2247,20 +2249,24 @@ fn render_history_to_string(messages: &Conversation, debug: bool) -> String {
                 MessageContent::Text(text) => {
                     let theme = output::get_theme();
                     print_markdown_to_string(&text.text, &theme, &mut out);
-                    out.push_str("\n");
+                    out.push('\n');
                 }
                 MessageContent::Thinking(t) => {
-                    out.push_str("\n");
+                    out.push('\n');
                     for line in t.thinking.lines() {
                         out.push_str(&format!("{}\n", console::style(line).dim().italic()));
                     }
-                    out.push_str("\n");
+                    out.push('\n');
                 }
                 MessageContent::ToolRequest(req) => {
                     if let Ok(call) = &req.tool_call {
                         let (tool, extension) = split_tool_name(&call.name);
                         let tool_header = if extension.is_empty() {
-                            format!("  {} {}", console::style("▸").dim(), console::style(&tool).dim())
+                            format!(
+                                "  {} {}",
+                                console::style("▸").dim(),
+                                console::style(&tool).dim()
+                            )
                         } else {
                             format!(
                                 "  {} {} {}",
@@ -2289,7 +2295,10 @@ fn render_history_to_string(messages: &Conversation, debug: bool) -> String {
                     }
                     if debug {
                         if let Err(e) = &resp.tool_result {
-                            out.push_str(&format!("    {}\n", console::style(e.to_string()).red().dim()));
+                            out.push_str(&format!(
+                                "    {}\n",
+                                console::style(e.to_string()).red().dim()
+                            ));
                         }
                     }
                 }
@@ -2307,7 +2316,10 @@ fn render_history_to_string(messages: &Conversation, debug: bool) -> String {
                 }
                 MessageContent::ActionRequired(action) => match &action.data {
                     ActionRequiredData::ToolConfirmation { tool_name, .. } => {
-                        out.push_str(&format!("Action Required: tool_confirmation ({})\n", tool_name));
+                        out.push_str(&format!(
+                            "Action Required: tool_confirmation ({})\n",
+                            tool_name
+                        ));
                     }
                     ActionRequiredData::Elicitation { message, .. } => {
                         out.push_str(&format!("Action Required: elicitation ({})\n", message));
@@ -2315,7 +2327,7 @@ fn render_history_to_string(messages: &Conversation, debug: bool) -> String {
                     ActionRequiredData::ElicitationResponse { id, .. } => {
                         out.push_str(&format!("Action Required: elicitation_response ({})\n", id));
                     }
-                }
+                },
                 _ => {}
             }
         }
@@ -2431,7 +2443,7 @@ fn print_markdown_to_string(content: &str, theme: &output::Theme, out: &mut Stri
         .colored_output(crate::session::output::env_no_color())
         .language("Markdown")
         .wrapping_mode(bat::WrappingMode::NoWrapping(true));
-    
+
     let _ = printer.print_with_writer(Some(out));
 }
 
