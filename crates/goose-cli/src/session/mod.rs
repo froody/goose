@@ -531,6 +531,14 @@ impl CliSession {
                     tokio::signal::unix::SignalKind::from_raw(libc::SIGCONT),
                 ) {
                     while sigcont.recv().await.is_some() {
+                        // Sleep briefly to ensure rustyline in the main thread has returned from
+                        // tty::suspend() and restored raw mode before we attempt to print.
+                        // On Linux, thread scheduling is fast enough that the background thread
+                        // often wakes up first while raw_mode is still false, causing the printer
+                        // to write directly to stdout concurrently with raw mode restoration,
+                        // leading to race conditions or stopped processes (SIGTTOU).
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
                         let state = redraw_state.lock().unwrap();
                         let history_str = render_history_to_string(&state.messages, state.debug);
 
