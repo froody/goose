@@ -58,6 +58,49 @@ pub fn get_config() -> HeadroomConfig {
         .unwrap_or_default()
 }
 
+/// Helper to construct the command and arguments for running headroom,
+/// automatically falling back to uvx if the headroom binary is not available.
+pub fn get_command_and_args(subcommand_args: &[String]) -> (String, Vec<String>) {
+    let config = get_config();
+    
+    // If a custom command is configured (not the default "headroom"), or if headroom is available in PATH,
+    // use it directly.
+    if config.command != "headroom" || which::which("headroom").is_ok() {
+        return (config.command.clone(), subcommand_args.to_vec());
+    }
+
+    // Check if uvx is available
+    if which::which("uvx").is_ok() {
+        let mut args = vec![
+            "--python".to_string(),
+            "python3.13".to_string(),
+            "--from".to_string(),
+            "headroom-ai[proxy,mcp]".to_string(),
+            "headroom".to_string(),
+        ];
+        args.extend(subcommand_args.iter().cloned());
+        return ("uvx".to_string(), args);
+    }
+
+    // Check if uv is available
+    if which::which("uv").is_ok() {
+        let mut args = vec![
+            "tool".to_string(),
+            "run".to_string(),
+            "--python".to_string(),
+            "python3.13".to_string(),
+            "--from".to_string(),
+            "headroom-ai[proxy,mcp]".to_string(),
+            "headroom".to_string(),
+        ];
+        args.extend(subcommand_args.iter().cloned());
+        return ("uv".to_string(), args);
+    }
+
+    // Fallback to config.command if neither is found
+    (config.command.clone(), subcommand_args.to_vec())
+}
+
 /// Check if the headroom proxy is active.
 pub fn is_active() -> bool {
     let config = get_config();
@@ -99,15 +142,15 @@ pub async fn start_proxy_if_needed() -> Result<()> {
         return Ok(());
     }
 
+    let subcommand_args = vec!["proxy".to_string(), "--port".to_string(), config.port.to_string()];
+    let (cmd_name, cmd_args) = get_command_and_args(&subcommand_args);
+
     info!(
-        "Starting headroom proxy sidecar on port {} using command '{}'",
-        config.port, config.command
+        "Starting headroom proxy sidecar on port {} using command '{}' and args {:?}",
+        config.port, cmd_name, cmd_args
     );
-    let mut cmd = Command::new(&config.command);
-    cmd.arg("proxy")
-        .arg("--port")
-        .arg(config.port.to_string())
-        .kill_on_drop(true);
+    let mut cmd = Command::new(&cmd_name);
+    cmd.args(&cmd_args).kill_on_drop(true);
 
     configure_subprocess(&mut cmd);
 
@@ -221,4 +264,3 @@ mod tests {
         assert_eq!(rewritten, original);
     }
 }
-
