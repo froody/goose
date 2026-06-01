@@ -208,7 +208,9 @@ fn parse_think_tag(buffer: &str, start: usize) -> Option<(ThinkTag, usize)> {
     }
 
     let name = buffer.get(name_start..idx).unwrap_or_default();
-    let is_think = name.eq_ignore_ascii_case("think") || name.eq_ignore_ascii_case("thinking");
+    let is_think = name.eq_ignore_ascii_case("think")
+        || name.eq_ignore_ascii_case("thinking")
+        || name.eq_ignore_ascii_case("thought");
     if !is_think {
         return None;
     }

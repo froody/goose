@@ -257,17 +257,16 @@ fn process_response_part_impl(
         // or wrap them in `<thought>...</thought>` blocks instead of setting the `"thought": true` field.
         let mut clean_text = text.to_string();
         if !is_thought {
-            if clean_text.to_lowercase().starts_with("thought\n") {
+            let lower = clean_text.to_lowercase();
+            if lower.starts_with("thought\n") || lower.starts_with("thought ") {
                 is_thought = true;
-                clean_text = clean_text[8..].to_string();
-            } else if clean_text.to_lowercase().starts_with("thought ") {
+                clean_text = clean_text.chars().skip(8).collect();
+            } else if lower.starts_with("<thought>") {
                 is_thought = true;
-                clean_text = clean_text[8..].to_string();
-            } else if clean_text.to_lowercase().starts_with("<thought>") {
-                is_thought = true;
-                clean_text = clean_text[9..].to_string();
+                clean_text = clean_text.chars().skip(9).collect();
                 if clean_text.to_lowercase().ends_with("</thought>") {
-                    clean_text = clean_text[..clean_text.len() - 10].to_string();
+                    let len = clean_text.chars().count();
+                    clean_text = clean_text.chars().take(len.saturating_sub(10)).collect();
                 }
             }
         }
@@ -355,7 +354,7 @@ pub fn response_to_message(response: Value) -> Result<Message> {
                     }
                     "OTHER" => {
                         Err(ProviderError::RequestFailed(
-                            "Google API generation stopped due to other reasons.".to_string()
+                            "Google API generation stopped due to other reasons.".to_string(),
                         ))?;
                     }
                     _ => {}
@@ -1438,14 +1437,20 @@ data: [DONE]"#;
         });
         let content = process_response_part_impl(&response_part, &mut sig).unwrap();
         assert!(content.as_thinking().is_some());
-        assert_eq!(content.as_thinking().unwrap().thinking, "Hello from Vertex thoughts");
+        assert_eq!(
+            content.as_thinking().unwrap().thinking,
+            "Hello from Vertex thoughts"
+        );
 
         let response_part_tag = json!({
             "text": "<thought>Hello wrapped thoughts</thought>"
         });
         let content_tag = process_response_part_impl(&response_part_tag, &mut sig).unwrap();
         assert!(content_tag.as_thinking().is_some());
-        assert_eq!(content_tag.as_thinking().unwrap().thinking, "Hello wrapped thoughts");
+        assert_eq!(
+            content_tag.as_thinking().unwrap().thinking,
+            "Hello wrapped thoughts"
+        );
     }
 
     #[tokio::test]

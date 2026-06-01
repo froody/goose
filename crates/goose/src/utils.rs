@@ -96,6 +96,12 @@ pub fn split_command_args(input: &str) -> anyhow::Result<Vec<String>> {
     Ok(parts)
 }
 
+pub fn session_start_time() -> chrono::DateTime<chrono::Utc> {
+    static START_TIME: std::sync::OnceLock<chrono::DateTime<chrono::Utc>> =
+        std::sync::OnceLock::new();
+    *START_TIME.get_or_init(chrono::Utc::now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,10 +229,4 @@ mod tests {
         assert!(split_command_args(r#""unmatched"#).is_err());
         assert!(split_command_args("'unmatched").is_err());
     }
-}
-
-pub fn session_start_time() -> chrono::DateTime<chrono::Utc> {
-    static START_TIME: std::sync::OnceLock<chrono::DateTime<chrono::Utc>> =
-        std::sync::OnceLock::new();
-    *START_TIME.get_or_init(chrono::Utc::now)
 }
