@@ -292,6 +292,7 @@ impl ApiClient {
     }
 
     pub fn with_timeout(host: String, auth: AuthMethod, timeout: Duration) -> Result<Self> {
+        let host = crate::headroom::rewrite_url_if_needed(&host);
         let mut client_builder = Client::builder().timeout(timeout);
 
         // Configure TLS if needed
