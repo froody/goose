@@ -431,6 +431,9 @@ where
         let mut last_signature: Option<String> = None;
         let stream_id = Uuid::new_v4().to_string();
         let mut incomplete_data: Option<String> = None;
+        let mut think_filter = crate::providers::base::ThinkFilter::new();
+        let mut prefix_detected = None;
+        let mut prefix_buffer = String::new();
 
         while let Some(line_result) = stream.next().await {
             let line = line_result?;
@@ -515,13 +518,107 @@ where
 
             if let Some(parts) = parts {
                 for part in parts {
-                    if let Some(content) = process_response_part_impl(part, &mut last_signature) {
-                        let message = Message::new(
-                            Role::Assistant,
-                            chrono::Utc::now().timestamp(),
-                            vec![content],
-                        ).with_id(stream_id.clone());
-                        yield (Some(message), None);
+                    if part.get("functionCall").is_some() {
+                        if let Some(content) = process_response_part_impl(part, &mut last_signature) {
+                            let message = Message::new(
+                                Role::Assistant,
+                                chrono::Utc::now().timestamp(),
+                                vec![content],
+                            ).with_id(stream_id.clone());
+                            yield (Some(message), None);
+                        }
+                        continue;
+                    }
+
+                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                        if text.is_empty() {
+                            continue;
+                        }
+
+                        let signature = part.get(THOUGHT_SIGNATURE_KEY).and_then(|v| v.as_str());
+                        let is_explicit_thought = part
+                            .get("thought")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false);
+
+                        if let Some(sig) = signature {
+                            last_signature = Some(sig.to_string());
+                        }
+
+                        if is_explicit_thought {
+                            let content = match &last_signature {
+                                Some(sig) => MessageContent::thinking(text.to_string(), sig.clone()),
+                                None => MessageContent::thinking(text.to_string(), ""),
+                            };
+                            let message = Message::new(
+                                Role::Assistant,
+                                chrono::Utc::now().timestamp(),
+                                vec![content],
+                            ).with_id(stream_id.clone());
+                            yield (Some(message), None);
+                            continue;
+                        }
+
+                        let mut text_to_process = text.to_string();
+
+                        if prefix_detected.is_none() {
+                            prefix_buffer.push_str(&text_to_process);
+                            let lower = prefix_buffer.to_lowercase();
+
+                            let pattern1 = "thought\n";
+                            let pattern2 = "thought ";
+
+                            let starts_matching_pattern = pattern1.starts_with(&lower) || pattern2.starts_with(&lower);
+
+                            if !starts_matching_pattern {
+                                prefix_detected = Some(false);
+                                text_to_process = std::mem::take(&mut prefix_buffer);
+                            } else if lower.starts_with(pattern1) || lower.starts_with(pattern2) {
+                                prefix_detected = Some(true);
+                                text_to_process = prefix_buffer.chars().skip(8).collect();
+                                prefix_buffer.clear();
+                            } else {
+                                continue;
+                            }
+                        }
+
+                        if prefix_detected == Some(true) {
+                            if !text_to_process.is_empty() {
+                                let content = match &last_signature {
+                                    Some(sig) => MessageContent::thinking(text_to_process, sig.clone()),
+                                    None => MessageContent::thinking(text_to_process, ""),
+                                };
+                                let message = Message::new(
+                                    Role::Assistant,
+                                    chrono::Utc::now().timestamp(),
+                                    vec![content],
+                                ).with_id(stream_id.clone());
+                                yield (Some(message), None);
+                            }
+                        } else {
+                            let filtered = think_filter.push(&text_to_process);
+
+                            let mut contents = Vec::new();
+                            if !filtered.thinking.is_empty() {
+                                let content = match &last_signature {
+                                    Some(sig) => MessageContent::thinking(filtered.thinking, sig.clone()),
+                                    None => MessageContent::thinking(filtered.thinking, ""),
+                                };
+                                contents.push(content);
+                            }
+                            if !filtered.content.is_empty() {
+                                contents.push(MessageContent::text(filtered.content));
+                            }
+
+                            if !contents.is_empty() {
+                                let message = Message::new(
+                                    Role::Assistant,
+                                    chrono::Utc::now().timestamp(),
+                                    contents,
+                                ).with_id(stream_id.clone());
+                                yield (Some(message), None);
+                            }
+                        }
                     }
                 }
             }
@@ -561,6 +658,28 @@ where
 
         if let Some(usage) = final_usage {
             yield (None, Some(usage));
+        }
+
+        let filtered = think_filter.finish();
+        let mut contents = Vec::new();
+        if !filtered.thinking.is_empty() {
+            let content = match &last_signature {
+                Some(sig) => MessageContent::thinking(filtered.thinking, sig.clone()),
+                None => MessageContent::thinking(filtered.thinking, ""),
+            };
+            contents.push(content);
+        }
+        if !filtered.content.is_empty() {
+            contents.push(MessageContent::text(filtered.content));
+        }
+
+        if !contents.is_empty() {
+            let message = Message::new(
+                Role::Assistant,
+                chrono::Utc::now().timestamp(),
+                contents,
+            ).with_id(stream_id.clone());
+            yield (Some(message), None);
         }
     }
 }
