@@ -278,6 +278,12 @@ impl Agent {
     }
 
     pub fn with_config(config: AgentConfig) -> Self {
+        tokio::spawn(async {
+            if let Err(e) = crate::headroom::start_proxy_if_needed().await {
+                tracing::warn!("Could not start headroom proxy sidecar: {}", e);
+            }
+        });
+
         let (tool_tx, tool_rx) = mpsc::channel(32);
         let provider = Arc::new(Mutex::new(None));
 

@@ -130,19 +130,55 @@ pub fn is_extension_enabled(key: &str) -> bool {
 }
 
 pub fn get_enabled_extensions() -> Vec<ExtensionConfig> {
-    get_all_extensions()
+    let mut extensions: Vec<ExtensionConfig> = get_all_extensions()
         .into_iter()
         .filter(|ext| ext.enabled)
         .map(|ext| ext.config)
-        .collect()
+        .collect();
+
+    let headroom_config = crate::headroom::get_config();
+    if headroom_config.enabled {
+        let headroom_ext = ExtensionConfig::Stdio {
+            name: "headroom".to_string(),
+            description: "Headroom context retrieval tool (CCR)".to_string(),
+            cmd: headroom_config.command,
+            args: vec!["mcp".to_string(), "serve".to_string()],
+            envs: crate::agents::extension::Envs::default(),
+            env_keys: Vec::new(),
+            timeout: None,
+            bundled: Some(false),
+            available_tools: Vec::new(),
+        };
+        extensions.push(headroom_ext);
+    }
+
+    extensions
 }
 
 pub fn get_enabled_extensions_with_config(config: &Config) -> Vec<ExtensionConfig> {
-    get_extensions_map_with_config(config)
+    let mut extensions: Vec<ExtensionConfig> = get_extensions_map_with_config(config)
         .into_values()
         .filter(|ext| ext.enabled)
         .map(|ext| ext.config)
-        .collect()
+        .collect();
+
+    let headroom_config = crate::headroom::get_config();
+    if headroom_config.enabled {
+        let headroom_ext = ExtensionConfig::Stdio {
+            name: "headroom".to_string(),
+            description: "Headroom context retrieval tool (CCR)".to_string(),
+            cmd: headroom_config.command,
+            args: vec!["mcp".to_string(), "serve".to_string()],
+            envs: crate::agents::extension::Envs::default(),
+            env_keys: Vec::new(),
+            timeout: None,
+            bundled: Some(false),
+            available_tools: Vec::new(),
+        };
+        extensions.push(headroom_ext);
+    }
+
+    extensions
 }
 
 pub fn get_warnings() -> Vec<String> {
