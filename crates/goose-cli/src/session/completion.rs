@@ -36,8 +36,8 @@ impl GooseCompleter {
         // Create completion candidates that match the prefix
         let candidates: Vec<Pair> = cache
             .prompts
-            .iter()
-            .flat_map(|(_, names)| names)
+            .values()
+            .flatten()
             .filter(|name| name.starts_with(prefix.trim()))
             .map(|name| Pair {
                 display: name.clone(),
@@ -159,13 +159,22 @@ impl GooseCompleter {
             "/help",
             "/?",
             "/t",
+            "/r",
             "/extension",
             "/builtin",
             "/prompts",
             "/prompt",
             "/mode",
             "/model",
+            "/plan",
+            "/endplan",
+            "/clear",
             "/recipe",
+            "/compact",
+            "/summarize",
+            "/rtk-gain",
+            "/headroom-perf",
+            "/edit",
             "/skills",
         ];
 
