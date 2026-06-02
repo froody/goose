@@ -1934,11 +1934,48 @@ impl ExtensionManager {
                 let limit = config.context_limit();
                 if total > 0 && limit > 0 {
                     let pct = (total as f64 / limit as f64 * 100.0).round() as u32;
+                    let mut spend_str = String::new();
+                    let mut spend = session.accumulated_cost;
+                    if spend.is_none() {
+                        if let (Some(provider_name), Some(model_config)) =
+                            (&session.provider_name, &session.model_config)
+                        {
+                            if let Some(canonical) =
+                                crate::providers::canonical::maybe_get_canonical_model(
+                                    provider_name,
+                                    &model_config.model_name,
+                                )
+                            {
+                                if let (Some(input_price), Some(output_price)) =
+                                    (canonical.cost.input, canonical.cost.output)
+                                {
+                                    let input_tokens = session
+                                        .accumulated_input_tokens
+                                        .or(session.input_tokens)
+                                        .unwrap_or(0)
+                                        as f64;
+                                    let output_tokens = session
+                                        .accumulated_output_tokens
+                                        .or(session.output_tokens)
+                                        .unwrap_or(0)
+                                        as f64;
+                                    spend = Some(
+                                        (input_tokens * input_price + output_tokens * output_price)
+                                            / 1_000_000.0,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    if let Some(cost) = spend {
+                        spend_str = format!(" | Spend: ${:.4}", cost);
+                    }
                     content.push_str(&format!(
-                        "Context: ~{}k/{}k tokens used ({}%)\n",
+                        "Context: ~{}k/{}k tokens used ({}%){}\n",
                         total / 1000,
                         limit / 1000,
-                        pct
+                        pct,
+                        spend_str
                     ));
                 }
             }
@@ -2379,6 +2416,51 @@ mod tests {
                 moim.contains(":00\n"),
                 "Timestamp should use minute granularity"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collect_moim_shows_spend() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let working_dir = std::path::Path::new("/tmp");
+
+        // Create a session
+        let session_manager = &em.context.session_manager;
+        let session = session_manager
+            .create_session(
+                working_dir.to_path_buf(),
+                "test-session".to_string(),
+                crate::session::SessionType::User,
+                crate::config::GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let session_id = &session.id;
+
+        // Update the session to have accumulated cost and model config
+        let model_config = crate::model::ModelConfig {
+            model_name: "claude-3-5-sonnet".to_string(),
+            context_limit: Some(1048000),
+            ..Default::default()
+        };
+        session_manager
+            .update(session_id)
+            .total_tokens(Some(58000))
+            .accumulated_cost(Some(0.12345))
+            .model_config(model_config)
+            .apply()
+            .await
+            .unwrap();
+
+        if let Some(moim) = em.collect_moim(session_id, working_dir).await {
+            assert!(
+                moim.contains("Context: ~58k/1048k tokens used (6%) | Spend: $0.1235\n"),
+                "Moim should contain correct context and formatted spend, but got: {:?}",
+                moim
+            );
+        } else {
+            panic!("MOIM should be returned");
         }
     }
 

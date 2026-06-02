@@ -215,6 +215,10 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
             print_rtk_gain();
             Some(InputResult::Retry)
         }
+        "/headroom-perf" => {
+            print_headroom_perf();
+            Some(InputResult::Retry)
+        }
         "/?" | "/help" => {
             print_help();
             print_editor_help();
@@ -430,6 +434,7 @@ fn print_help() {
                        If no filepath is provided, it will be saved to ./recipe.yaml.
 /compact - Compact the current conversation to reduce context length while preserving key information.
 /rtk-gain - Display accumulated token savings from in-process RTK filters.
+/headroom-perf - Display token savings and performance metrics from Headroom.
 /edit [text] - Open your prompt editor to compose a message. Optionally pre-fill with text.
                Uses $GOOSE_PROMPT_EDITOR, $VISUAL, or $EDITOR (in that order).
 /skills - List available skills or enable skills by name (usage: /skills [<name>...])
@@ -537,6 +542,66 @@ fn format_tokens_count(tokens: usize) -> String {
         format!("{:.1}k", tokens as f64 / 1_000.0)
     } else {
         tokens.to_string()
+    }
+}
+
+fn print_headroom_perf() {
+    println!(
+        "\n{}",
+        console::style("Headroom Performance Metrics").bold().cyan()
+    );
+    println!("{}", console::style("============================").dim());
+
+    let mut cmd = if which::which("headroom").is_ok() {
+        let mut c = std::process::Command::new("headroom");
+        c.arg("perf");
+        c
+    } else if which::which("uvx").is_ok() {
+        let mut c = std::process::Command::new("uvx");
+        c.args([
+            "--python",
+            "python3.13",
+            "--from",
+            "headroom-ai[proxy,mcp]",
+            "headroom",
+            "perf",
+        ]);
+        c
+    } else if which::which("uv").is_ok() {
+        let mut c = std::process::Command::new("uv");
+        c.args([
+            "tool",
+            "run",
+            "--python",
+            "python3.13",
+            "--from",
+            "headroom-ai[proxy,mcp]",
+            "headroom",
+            "perf",
+        ]);
+        c
+    } else {
+        println!("Error: Neither 'headroom' nor 'uvx' / 'uv' was found on your PATH.");
+        return;
+    };
+
+    match cmd.output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status.success() {
+                println!("{}", stdout);
+            } else if stdout.contains("No performance data found")
+                || stderr.contains("No performance data found")
+            {
+                println!("{}", console::style("No performance data found in ~/.headroom/logs/. Start the proxy and run a few sessions to collect data!").yellow());
+            } else {
+                println!("Error executing headroom perf:\n{}", stderr);
+            }
+        }
+        Err(e) => {
+            println!("Error: Failed to run headroom perf: {}", e);
+        }
     }
 }
 

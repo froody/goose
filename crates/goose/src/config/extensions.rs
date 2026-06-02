@@ -138,10 +138,8 @@ pub fn get_enabled_extensions() -> Vec<ExtensionConfig> {
 
     let headroom_config = crate::headroom::get_config();
     if headroom_config.enabled {
-        let (cmd, args) = crate::headroom::get_command_and_args(&vec![
-            "mcp".to_string(),
-            "serve".to_string(),
-        ]);
+        let (cmd, args) =
+            crate::headroom::get_command_and_args(&["mcp".to_string(), "serve".to_string()]);
         let headroom_ext = ExtensionConfig::Stdio {
             name: "headroom".to_string(),
             description: "Headroom context retrieval tool (CCR)".to_string(),
@@ -168,10 +166,8 @@ pub fn get_enabled_extensions_with_config(config: &Config) -> Vec<ExtensionConfi
 
     let headroom_config = crate::headroom::get_config();
     if headroom_config.enabled {
-        let (cmd, args) = crate::headroom::get_command_and_args(&vec![
-            "mcp".to_string(),
-            "serve".to_string(),
-        ]);
+        let (cmd, args) =
+            crate::headroom::get_command_and_args(&["mcp".to_string(), "serve".to_string()]);
         let headroom_ext = ExtensionConfig::Stdio {
             name: "headroom".to_string(),
             description: "Headroom context retrieval tool (CCR)".to_string(),

@@ -1,9 +1,12 @@
+use crate::config::paths::Paths;
 use crate::config::Config;
 use crate::subprocess::configure_subprocess;
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
 use std::net::TcpStream;
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::{Child, Command};
 use tracing::{info, warn};
@@ -62,7 +65,7 @@ pub fn get_config() -> HeadroomConfig {
 /// automatically falling back to uvx if the headroom binary is not available.
 pub fn get_command_and_args(subcommand_args: &[String]) -> (String, Vec<String>) {
     let config = get_config();
-    
+
     // If a custom command is configured (not the default "headroom"), or if headroom is available in PATH,
     // use it directly.
     if config.command != "headroom" || which::which("headroom").is_ok() {
@@ -142,7 +145,11 @@ pub async fn start_proxy_if_needed() -> Result<()> {
         return Ok(());
     }
 
-    let subcommand_args = vec!["proxy".to_string(), "--port".to_string(), config.port.to_string()];
+    let subcommand_args = vec![
+        "proxy".to_string(),
+        "--port".to_string(),
+        config.port.to_string(),
+    ];
     let (cmd_name, cmd_args) = get_command_and_args(&subcommand_args);
 
     info!(
@@ -153,6 +160,22 @@ pub async fn start_proxy_if_needed() -> Result<()> {
     cmd.args(&cmd_args).kill_on_drop(true);
 
     configure_subprocess(&mut cmd);
+
+    // Redirect stdout and stderr to a logfile to prevent them from outputting directly to the terminal
+    let log_dir = Paths::in_state_dir("logs");
+    std::fs::create_dir_all(&log_dir).context("failed to create log directory for headroom")?;
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("headroom.log"))
+        .context("failed to open headroom log file")?;
+
+    cmd.stdout(Stdio::from(
+        log_file
+            .try_clone()
+            .context("failed to clone headroom log file handle")?,
+    ));
+    cmd.stderr(Stdio::from(log_file));
 
     match cmd.spawn() {
         Ok(child) => {
@@ -198,6 +221,7 @@ pub fn rewrite_url_if_needed(original_url: &str) -> String {
     let is_supported = original_url.contains("api.openai.com")
         || original_url.contains("api.anthropic.com")
         || original_url.contains("api.google")
+        || original_url.contains("googleapis.com")
         || original_url.contains("localhost:8787") // already pointing to headroom
         || original_url.contains("127.0.0.1:8787");
 
@@ -251,10 +275,35 @@ mod tests {
 
     #[test]
     fn test_rewrite_url_disabled() {
-        // By default, headroom is disabled
         let original = "https://api.openai.com/v1/chat/completions";
         let rewritten = rewrite_url_if_needed(original);
-        assert_eq!(rewritten, original);
+        if get_config().enabled && is_active() {
+            let port = get_config().port;
+            assert_eq!(
+                rewritten,
+                format!("http://127.0.0.1:{}/v1/chat/completions", port)
+            );
+        } else {
+            assert_eq!(rewritten, original);
+        }
+    }
+
+    #[test]
+    fn test_rewrite_url_google() {
+        let original = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+        let rewritten = rewrite_url_if_needed(original);
+        if get_config().enabled && is_active() {
+            let port = get_config().port;
+            assert_eq!(
+                rewritten,
+                format!(
+                    "http://127.0.0.1:{}/v1beta/models/gemini-2.5-flash:generateContent",
+                    port
+                )
+            );
+        } else {
+            assert_eq!(rewritten, original);
+        }
     }
 
     #[test]
