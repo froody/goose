@@ -725,9 +725,35 @@ async fn collect_tagged_lines(
     let stderr_lines = SplitStream::new(BufReader::new(stderr).split(b'\n')).map(|l| (true, l));
     let mut merged = stdout_lines.merge(stderr_lines);
 
+    const MAX_COLLECT_LINES: usize = 100_000;
+    const MAX_COLLECT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+
+    let mut total_lines = 0;
+    let mut total_bytes = 0;
+    let mut truncated = false;
+
     while let Some((is_stderr, line)) = merged.next().await {
         let line = line?;
-        let _ = tx.send((is_stderr, String::from_utf8_lossy(&line).into_owned()));
+        if truncated {
+            continue;
+        }
+
+        let line_str = String::from_utf8_lossy(&line).into_owned();
+        total_lines += 1;
+        total_bytes += line_str.len();
+
+        if total_lines > MAX_COLLECT_LINES || total_bytes > MAX_COLLECT_BYTES {
+            truncated = true;
+            let msg = format!(
+                "\n[Output truncated: exceeded safety limit of {} lines or {} MB]",
+                MAX_COLLECT_LINES,
+                MAX_COLLECT_BYTES / (1024 * 1024)
+            );
+            let _ = tx.send((is_stderr, msg));
+            continue;
+        }
+
+        let _ = tx.send((is_stderr, line_str));
     }
     Ok(())
 }
@@ -1097,5 +1123,36 @@ mod tests {
         assert!(!filtered.contains("PING "));
         assert!(!filtered.contains("64 bytes from"));
         assert!(filtered.contains("--- example.com ping statistics ---"));
+    }
+
+    #[tokio::test]
+    async fn shell_truncates_huge_output_safely() {
+        let tool = ShellTool::new_for_test().unwrap();
+        // A command that prints 120,000 lines (exceeds our 100,000 line safety cap)
+        let command = if cfg!(windows) {
+            "PowerShell -Command \"1..120000 | ForEach-Object { Write-Output 'line' }\""
+        } else {
+            "python3 -c \"for i in range(120000): print('line')\""
+        };
+
+        let result = tool
+            .shell(ShellParams {
+                command: command.to_string(),
+                timeout_secs: Some(15),
+            })
+            .await;
+
+        assert_eq!(result.is_error, Some(false));
+        let notice = extract_text(&result);
+        assert!(!notice.is_empty());
+
+        // Assert that the total lines counted in the truncation notice is exactly 100,002
+        // instead of 120,000, proving that collect_tagged_lines capped the input at 100,000
+        // (plus the 2 lines of the truncation message).
+        let truncation_info = match &result.content[1].raw {
+            rmcp::model::RawContent::Text(t) => &t.text,
+            _ => panic!("expected truncation notice in second content block"),
+        };
+        assert!(truncation_info.contains("100002 lines total"));
     }
 }
