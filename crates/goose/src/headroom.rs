@@ -21,6 +21,8 @@ pub struct HeadroomConfig {
     pub port: u16,
     #[serde(default = "default_command")]
     pub command: String,
+    #[serde(default)]
+    pub custom_hosts: Vec<String>,
 }
 
 fn default_auto_start() -> bool {
@@ -42,6 +44,7 @@ impl Default for HeadroomConfig {
             auto_start: default_auto_start(),
             port: default_port(),
             command: default_command(),
+            custom_hosts: Vec::new(),
         }
     }
 }
@@ -217,13 +220,14 @@ pub fn rewrite_url_if_needed(original_url: &str) -> String {
         return original_url.to_string();
     }
 
-    // Only rewrite standard API endpoints that headroom proxy supports
+    // Only rewrite standard API endpoints that headroom proxy supports, or custom configured hosts
     let is_supported = original_url.contains("api.openai.com")
         || original_url.contains("api.anthropic.com")
         || original_url.contains("api.google")
         || original_url.contains("googleapis.com")
         || original_url.contains("localhost:8787") // already pointing to headroom
-        || original_url.contains("127.0.0.1:8787");
+        || original_url.contains("127.0.0.1:8787")
+        || config.custom_hosts.iter().any(|h| original_url.contains(h));
 
     if !is_supported {
         return original_url.to_string();
@@ -271,6 +275,25 @@ mod tests {
         assert!(config.auto_start);
         assert_eq!(config.port, 8787);
         assert_eq!(config.command, "headroom");
+        assert!(config.custom_hosts.is_empty());
+    }
+
+    #[test]
+    fn test_parse_custom_hosts() {
+        let yaml = "
+enabled: true
+auto_start: true
+port: 8787
+command: headroom
+custom_hosts:
+  - nadirclaw
+  - custom-proxy.internal
+";
+        let config: HeadroomConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.custom_hosts.len(), 2);
+        assert_eq!(config.custom_hosts[0], "nadirclaw");
+        assert_eq!(config.custom_hosts[1], "custom-proxy.internal");
     }
 
     #[test]

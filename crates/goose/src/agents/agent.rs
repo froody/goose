@@ -1842,6 +1842,27 @@ impl Agent {
                                     )
                                     .await;
 
+                                let mut response = response;
+                                let mut frontend_requests = frontend_requests;
+                                let mut remaining_requests = remaining_requests;
+                                let mut filtered_response = filtered_response;
+
+                                if frontend_requests.is_empty() && remaining_requests.is_empty() {
+                                    if let Some(augmented) = crate::providers::toolshim::parse_and_augment_gemma_fallback(response.clone(), &tools) {
+                                        response = augmented;
+                                        let recat = self
+                                            .categorize_tools(
+                                                &response,
+                                                &tools,
+                                                surfaced_thinking_in_turn,
+                                            )
+                                            .await;
+                                        frontend_requests = recat.frontend_requests;
+                                        remaining_requests = recat.remaining_requests;
+                                        filtered_response = recat.filtered_response;
+                                    }
+                                }
+
                                 let filtered_response = if let Some(inference) = inference.as_ref() {
                                     filtered_response.with_inference(inference.clone())
                                 } else {

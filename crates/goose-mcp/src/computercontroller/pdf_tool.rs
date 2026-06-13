@@ -77,19 +77,16 @@ pub async fn pdf_tool(
                                                                             last_was_text = true;
                                                                         }
                                                                     }
-                                                                    Object::Integer(offset) => {
+                                                                    Object::Integer(offset) if *offset < -100 => {
                                                                         // Large negative offsets often indicate word spacing
-                                                                        if *offset < -100 {
-                                                                            text.push(' ');
-                                                                            last_was_text = false;
-                                                                        }
+                                                                        text.push(' ');
+                                                                        last_was_text = false;
                                                                     }
-                                                                    Object::Real(offset) => {
-                                                                        if *offset < -100.0 {
-                                                                            text.push(' ');
-                                                                            last_was_text = false;
-                                                                        }
+                                                                    Object::Real(offset) if *offset < -100.0 => {
+                                                                        text.push(' ');
+                                                                        last_was_text = false;
                                                                     }
+                                                                    Object::Integer(_) | Object::Real(_) => {}
                                                                     _ => {}
                                                                 }
                                                             }

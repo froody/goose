@@ -403,6 +403,146 @@ fn parse_inline_json_tool_calls(content: &str, tools: &[Tool]) -> Vec<CallToolRe
     calls
 }
 
+fn add_spaces_to_colons(input: &str) -> String {
+    let mut result = String::new();
+    let mut in_quote = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '"' {
+            in_quote = !in_quote;
+        }
+        result.push(ch);
+        if ch == ':' && !in_quote {
+            let is_url_scheme = result.ends_with("http") || result.ends_with("https");
+            let is_drive_letter = result.len() >= 2 && {
+                let bytes = result.as_bytes();
+                let last_char = bytes[bytes.len() - 1] as char;
+                let prev_char = bytes[bytes.len() - 2] as char;
+                last_char.is_ascii_alphabetic() && (prev_char.is_whitespace() || prev_char == '[' || prev_char == ',')
+            } || (result.len() == 1 && result.chars().next().unwrap().is_ascii_alphabetic());
+
+            if !is_url_scheme && !is_drive_letter {
+                if let Some(&next_ch) = chars.peek() {
+                    if !next_ch.is_whitespace() {
+                        result.push(' ');
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+#[allow(clippy::string_slice)] // Slicing is safe.
+fn parse_gemma_tool_calls(content: &str, tools: &[Tool]) -> Vec<CallToolRequestParams> {
+    let mut calls = Vec::new();
+    let mut search_start = 0;
+
+    while let Some(call_pos) = content[search_start..].find("call:") {
+        let abs_call_pos = search_start + call_pos;
+        let start_of_name = abs_call_pos + 5; // "call:".len()
+
+        if let Some(brace_pos) = content[start_of_name..].find('{') {
+            let abs_brace_pos = start_of_name + brace_pos;
+            let raw_tool_name = content[start_of_name..abs_brace_pos].trim();
+
+            if let Some(tool_name) = resolve_tool_name(raw_tool_name, tools) {
+                if let Some((json_obj, consumed_len)) = extract_first_json_object(&content[abs_brace_pos..]) {
+                    // Try parsing json_obj as YAML (which tolerates loose unquoted JSON)
+                    let preprocessed = add_spaces_to_colons(json_obj);
+                    if let Ok(yaml_val) = serde_yaml::from_str::<serde_json::Value>(&preprocessed) {
+                        if yaml_val.is_object() {
+                            calls.push(
+                                CallToolRequestParams::new(tool_name)
+                                    .with_arguments(yaml_val.as_object().unwrap().clone()),
+                            );
+                        }
+                    }
+                    search_start = abs_brace_pos + consumed_len;
+                    continue;
+                }
+            }
+        }
+        search_start = start_of_name;
+    }
+    calls
+}
+
+#[allow(clippy::string_slice)] // Slicing is safe.
+fn strip_gemma_tool_calls(content: &str, tools: &[Tool]) -> String {
+    let mut stripped = content.to_string();
+    let mut search_start = 0;
+
+    while let Some(call_pos) = stripped[search_start..].find("call:") {
+        let abs_call_pos = search_start + call_pos;
+        let start_of_name = abs_call_pos + 5; // "call:".len()
+
+        if let Some(brace_pos) = stripped[start_of_name..].find('{') {
+            let abs_brace_pos = start_of_name + brace_pos;
+            let raw_tool_name = stripped[start_of_name..abs_brace_pos].trim();
+
+            if resolve_tool_name(raw_tool_name, tools).is_some() {
+                if let Some((_, consumed_len)) = extract_first_json_object(&stripped[abs_brace_pos..]) {
+                    let end_of_call = abs_brace_pos + consumed_len;
+                    stripped.replace_range(abs_call_pos..end_of_call, "");
+                    search_start = abs_call_pos;
+                    continue;
+                }
+            }
+        }
+        search_start = start_of_name;
+    }
+    stripped
+}
+
+fn sanitize_message_after_gemma_tool_parse(mut message: Message, tools: &[Tool]) -> Message {
+    for content in &mut message.content {
+        if let MessageContent::Text(text) = content {
+            text.text = strip_gemma_tool_calls(&text.text, tools);
+            let trimmed = text.text.trim();
+            if trimmed == "thought" || trimmed == "thought:" || trimmed == "thinking" {
+                text.text.clear();
+            }
+        }
+    }
+
+    message.content.retain(|content| match content {
+        MessageContent::Text(text) => !text.text.trim().is_empty(),
+        _ => true,
+    });
+
+    message
+}
+
+pub fn parse_and_augment_gemma_fallback(message: Message, tools: &[Tool]) -> Option<Message> {
+    let content = message
+        .content
+        .iter()
+        .filter_map(|content| {
+            if let MessageContent::Text(text) = content {
+                Some(text.text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if content.trim().is_empty() {
+        return None;
+    }
+
+    let gemma_tool_calls = parse_gemma_tool_calls(&content, tools);
+    if !gemma_tool_calls.is_empty() {
+        let cleaned = sanitize_message_after_gemma_tool_parse(message, tools);
+        Some(append_tool_calls_to_message(cleaned, gemma_tool_calls))
+    } else {
+        None
+    }
+}
+
+
 #[allow(clippy::string_slice)] // Marker constants are ASCII; byte indexing is safe.
 fn strip_tokenized_tool_markup(content: &str) -> String {
     let mut stripped = content.to_string();
@@ -1018,6 +1158,15 @@ pub async fn augment_message_with_tool_calls<T: ToolInterpreter>(
         ));
     }
 
+    let gemma_tool_calls = parse_gemma_tool_calls(&content, tools);
+    if !gemma_tool_calls.is_empty() {
+        let cleaned = sanitize_message_after_gemma_tool_parse(message, tools);
+        return Ok(append_tool_calls_to_message(
+            cleaned,
+            gemma_tool_calls,
+        ));
+    }
+
     if has_existing_tool_request {
         return Ok(sanitize_residual_markers(message));
     }
@@ -1399,4 +1548,41 @@ mod tests {
             Some("24h")
         );
     }
+
+    #[test]
+    fn parses_gemma_tool_calls_successfully() {
+        let tools = vec![Tool::new(
+            "search".to_string(),
+            "Search for files".to_string(),
+            serde_json::Map::new(),
+        )];
+
+        let content1 = "call:search{file_glob_patterns:[experimental/tbirch/dim2wasm/NEW_PLAN.md]}";
+        let calls1 = parse_gemma_tool_calls(content1, &tools);
+        assert_eq!(calls1.len(), 1);
+        assert_eq!(calls1[0].name, "search");
+        assert_eq!(
+            calls1[0].arguments.as_ref().unwrap().get("file_glob_patterns").unwrap().as_array().unwrap()[0].as_str().unwrap(),
+            "experimental/tbirch/dim2wasm/NEW_PLAN.md"
+        );
+
+        let content2 = "thought\ncall:search{file_glob_patterns: [foo.md, bar.md]}";
+        let calls2 = parse_gemma_tool_calls(content2, &tools);
+        assert_eq!(calls2.len(), 1);
+        assert_eq!(calls2[0].name, "search");
+    }
+
+    #[test]
+    fn strips_gemma_tool_calls_successfully() {
+        let tools = vec![Tool::new(
+            "search".to_string(),
+            "Search for files".to_string(),
+            serde_json::Map::new(),
+        )];
+
+        let content = "thought\ncall:search{file_glob_patterns:[experimental/tbirch/dim2wasm/NEW_PLAN.md]}";
+        let stripped = strip_gemma_tool_calls(content, &tools);
+        assert_eq!(stripped, "thought\n");
+    }
 }
+
