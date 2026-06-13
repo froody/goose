@@ -419,8 +419,10 @@ fn add_spaces_to_colons(input: &str) -> String {
                 let bytes = result.as_bytes();
                 let last_char = bytes[bytes.len() - 1] as char;
                 let prev_char = bytes[bytes.len() - 2] as char;
-                last_char.is_ascii_alphabetic() && (prev_char.is_whitespace() || prev_char == '[' || prev_char == ',')
-            } || (result.len() == 1 && result.chars().next().unwrap().is_ascii_alphabetic());
+                last_char.is_ascii_alphabetic()
+                    && (prev_char.is_whitespace() || prev_char == '[' || prev_char == ',')
+            } || (result.len() == 1
+                && result.chars().next().unwrap().is_ascii_alphabetic());
 
             if !is_url_scheme && !is_drive_letter {
                 if let Some(&next_ch) = chars.peek() {
@@ -448,7 +450,9 @@ fn parse_gemma_tool_calls(content: &str, tools: &[Tool]) -> Vec<CallToolRequestP
             let raw_tool_name = content[start_of_name..abs_brace_pos].trim();
 
             if let Some(tool_name) = resolve_tool_name(raw_tool_name, tools) {
-                if let Some((json_obj, consumed_len)) = extract_first_json_object(&content[abs_brace_pos..]) {
+                if let Some((json_obj, consumed_len)) =
+                    extract_first_json_object(&content[abs_brace_pos..])
+                {
                     // Try parsing json_obj as YAML (which tolerates loose unquoted JSON)
                     let preprocessed = add_spaces_to_colons(json_obj);
                     if let Ok(yaml_val) = serde_yaml::from_str::<serde_json::Value>(&preprocessed) {
@@ -483,7 +487,9 @@ fn strip_gemma_tool_calls(content: &str, tools: &[Tool]) -> String {
             let raw_tool_name = stripped[start_of_name..abs_brace_pos].trim();
 
             if resolve_tool_name(raw_tool_name, tools).is_some() {
-                if let Some((_, consumed_len)) = extract_first_json_object(&stripped[abs_brace_pos..]) {
+                if let Some((_, consumed_len)) =
+                    extract_first_json_object(&stripped[abs_brace_pos..])
+                {
                     let end_of_call = abs_brace_pos + consumed_len;
                     stripped.replace_range(abs_call_pos..end_of_call, "");
                     search_start = abs_call_pos;
@@ -541,7 +547,6 @@ pub fn parse_and_augment_gemma_fallback(message: Message, tools: &[Tool]) -> Opt
         None
     }
 }
-
 
 #[allow(clippy::string_slice)] // Marker constants are ASCII; byte indexing is safe.
 fn strip_tokenized_tool_markup(content: &str) -> String {
@@ -1161,10 +1166,7 @@ pub async fn augment_message_with_tool_calls<T: ToolInterpreter>(
     let gemma_tool_calls = parse_gemma_tool_calls(&content, tools);
     if !gemma_tool_calls.is_empty() {
         let cleaned = sanitize_message_after_gemma_tool_parse(message, tools);
-        return Ok(append_tool_calls_to_message(
-            cleaned,
-            gemma_tool_calls,
-        ));
+        return Ok(append_tool_calls_to_message(cleaned, gemma_tool_calls));
     }
 
     if has_existing_tool_request {
@@ -1562,7 +1564,16 @@ mod tests {
         assert_eq!(calls1.len(), 1);
         assert_eq!(calls1[0].name, "search");
         assert_eq!(
-            calls1[0].arguments.as_ref().unwrap().get("file_glob_patterns").unwrap().as_array().unwrap()[0].as_str().unwrap(),
+            calls1[0]
+                .arguments
+                .as_ref()
+                .unwrap()
+                .get("file_glob_patterns")
+                .unwrap()
+                .as_array()
+                .unwrap()[0]
+                .as_str()
+                .unwrap(),
             "experimental/tbirch/dim2wasm/NEW_PLAN.md"
         );
 
@@ -1580,9 +1591,9 @@ mod tests {
             serde_json::Map::new(),
         )];
 
-        let content = "thought\ncall:search{file_glob_patterns:[experimental/tbirch/dim2wasm/NEW_PLAN.md]}";
+        let content =
+            "thought\ncall:search{file_glob_patterns:[experimental/tbirch/dim2wasm/NEW_PLAN.md]}";
         let stripped = strip_gemma_tool_calls(content, &tools);
         assert_eq!(stripped, "thought\n");
     }
 }
-
